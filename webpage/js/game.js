@@ -44,6 +44,37 @@ function createInitialState() {
   };
 }
 
+function normalizeState(savedState) {
+  if (!savedState || typeof savedState !== "object" || Array.isArray(savedState)) {
+    return createInitialState();
+  }
+
+  const initial = createInitialState();
+  const normalized = {
+    ...initial,
+    ...savedState,
+    inventory: { ...initial.inventory, ...(savedState.inventory || {}) },
+    markets: { ...initial.markets, ...(savedState.markets || {}) },
+    territories: { ...initial.territories, ...(savedState.territories || {}) },
+    upgrades: { ...initial.upgrades, ...(savedState.upgrades || {}) },
+    contracts: Array.isArray(savedState.contracts) ? savedState.contracts : [],
+    rivals: Array.isArray(savedState.rivals) && savedState.rivals.length
+      ? savedState.rivals
+      : initial.rivals,
+    log: Array.isArray(savedState.log) && savedState.log.length
+      ? savedState.log
+      : initial.log
+  };
+
+  normalized.credits = Number.isFinite(normalized.credits) ? normalized.credits : initial.credits;
+  normalized.reputation = Number.isFinite(normalized.reputation) ? normalized.reputation : initial.reputation;
+  normalized.fleetSize = Number.isFinite(normalized.fleetSize) ? normalized.fleetSize : initial.fleetSize;
+  normalized.extractionRate = Number.isFinite(normalized.extractionRate) ? normalized.extractionRate : initial.extractionRate;
+  normalized.ticks = Number.isFinite(normalized.ticks) ? normalized.ticks : initial.ticks;
+
+  return normalized;
+}
+
 let state = loadState();
 if (!state.contracts.length) {
   spawnContracts();
@@ -69,7 +100,7 @@ const el = {
 function loadState() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : createInitialState();
+    return raw ? normalizeState(JSON.parse(raw)) : createInitialState();
   } catch {
     return createInitialState();
   }
