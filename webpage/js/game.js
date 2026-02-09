@@ -52,6 +52,8 @@ function createInitialState() {
     completedContracts: 0,
     grid: createGrid(),
     inventory: Object.fromEntries(resources.map((r) => [r.key, 30])),
+    previousInventorySnapshot: Object.fromEntries(resources.map((r) => [r.key, 30])),
+    resourceDeltas: Object.fromEntries(resources.map((r) => [r.key, { current: 30, lastTick: 30, delta: 0 }])),
     markets: Object.fromEntries(resources.map((r) => [r.key, r.basePrice])),
     territories: Object.fromEntries(belts.map((b) => [b.key, 25])),
     upgrades: Object.fromEntries(upgrades.map((u) => [u.key, 0])),
@@ -75,6 +77,7 @@ function createInitialState() {
 const el = {
   statsGrid: document.getElementById("statsGrid"),
   campaignPanel: document.getElementById("campaignPanel"),
+  resourcePanel: document.getElementById("resourcePanel"),
   sectorGrid: document.getElementById("sectorGrid"),
   buildActions: document.getElementById("buildActions"),
   beltList: document.getElementById("beltList"),
@@ -106,16 +109,30 @@ function loadState() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     const parsed = raw ? JSON.parse(raw) : createInitialState();
-    return {
-      ...createInitialState(),
+    const initial = createInitialState();
+    const merged = {
+      ...initial,
       ...parsed,
       campaign: {
-        ...createInitialState().campaign,
+        ...initial.campaign,
         ...(parsed.campaign || {})
       },
       selectedSector: parsed.selectedSector || "ceres",
       completedContracts: parsed.completedContracts || 0
     };
+
+    const fallbackSnapshot = Object.fromEntries(resources.map((r) => [r.key, merged.inventory[r.key] ?? 0]));
+    merged.previousInventorySnapshot = {
+      ...fallbackSnapshot,
+      ...(parsed.previousInventorySnapshot || {})
+    };
+    merged.resourceDeltas = Object.fromEntries(resources.map((r) => {
+      const current = merged.inventory[r.key] ?? 0;
+      const lastTick = merged.previousInventorySnapshot[r.key] ?? current;
+      return [r.key, { current, lastTick, delta: current - lastTick }];
+    }));
+
+    return merged;
   } catch {
     return createInitialState();
   }
@@ -125,6 +142,17 @@ const saveState = () => localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
 const formatNumber = (num) => Intl.NumberFormat().format(Math.round(num));
 const priceFor = (key) => state.markets[key] || 0;
 const avgInfluence = () => belts.reduce((sum, b) => sum + state.territories[b.key], 0) / belts.length;
+
+function updateResourceDeltas(previousSnapshot = state.previousInventorySnapshot || {}) {
+  const snapshot = {};
+  state.resourceDeltas = Object.fromEntries(resources.map((resource) => {
+    const current = state.inventory[resource.key] ?? 0;
+    const lastTick = previousSnapshot[resource.key] ?? current;
+    snapshot[resource.key] = current;
+    return [resource.key, { current, lastTick, delta: current - lastTick }];
+  }));
+  state.previousInventorySnapshot = snapshot;
+}
 
 function logEvent(text) {
   state.log.unshift(`[T+${state.ticks}] ${text}`);
@@ -169,6 +197,8 @@ function updateCampaign() {
 
 function simulateTick() {
   if (state.gameOver) return;
+
+  const previousSnapshot = { ...(state.previousInventorySnapshot || {}) };
 
   state.ticks += 1;
   const mineCount = countBuildings("mine");
@@ -222,6 +252,7 @@ function simulateTick() {
   }
 
   updateCampaign();
+  updateResourceDeltas(previousSnapshot);
   saveState();
   render();
 }
@@ -249,8 +280,10 @@ function maybeTriggerSectorEvent() {
 
 function runAction(action) {
   if (state.gameOver) return;
+  const previousSnapshot = { ...(state.previousInventorySnapshot || {}) };
   action();
   updateCampaign();
+  updateResourceDeltas(previousSnapshot);
   saveState();
   render();
 }
@@ -280,6 +313,33 @@ function updateMapVisuals() {
   const selected = belts.find((belt) => belt.key === state.selectedSector);
   const influence = Math.round(state.territories[selected.key]);
   el.selectedSectorInfo.textContent = `${selected.label} · Influence ${influence}% · Risk ${Math.round(selected.risk * 100)}%`;
+}
+
+function renderResourcePanel() {
+  el.resourcePanel.innerHTML = "";
+  resources.forEach((resource) => {
+    const metrics = state.resourceDeltas?.[resource.key] || {
+      current: state.inventory[resource.key] ?? 0,
+      lastTick: state.inventory[resource.key] ?? 0,
+      delta: 0
+    };
+    const row = document.createElement("div");
+    row.className = "resource-row";
+    const deltaClass = metrics.delta > 0 ? "positive" : metrics.delta < 0 ? "negative" : "neutral";
+    const deltaPrefix = metrics.delta > 0 ? "+" : "";
+
+    row.innerHTML = `
+      <div>
+        <strong>${resource.label}</strong>
+        <small>Stock ${formatNumber(metrics.current)}</small>
+      </div>
+      <div class="resource-metrics">
+        <span class="delta ${deltaClass}">${deltaPrefix}${metrics.delta.toFixed(1)} / tick</span>
+        <span class="price">${priceFor(resource.key).toFixed(1)} cr</span>
+      </div>
+    `;
+    el.resourcePanel.appendChild(row);
+  });
 }
 
 function renderCampaign() {
@@ -351,6 +411,7 @@ function render() {
   });
 
   renderCampaign();
+  renderResourcePanel();
   renderGrid();
   renderBuildActions();
   updateMapVisuals();
@@ -498,9 +559,11 @@ el.resetBtn.onclick = () => {
   if (!window.confirm("Reset your campaign and start a new run?")) return;
   state = createInitialState();
   spawnContracts();
+  updateResourceDeltas(state.previousInventorySnapshot || state.inventory);
   saveState();
   render();
 };
 
+updateResourceDeltas(state.previousInventorySnapshot || state.inventory);
 render();
 setInterval(simulateTick, TICK_MS);

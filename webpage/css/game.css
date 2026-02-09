@@ -179,3 +179,20 @@ select,input {
 .sector-cmd { margin-top: .7rem; display: grid; gap: .45rem; }
 .map-node { cursor: pointer; }
 .map-node.active { stroke: #94ffca; stroke-width: 2.6; }
+
+.resource-panel { margin-top: .75rem; display: grid; gap: .5rem; }
+.resource-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: .65rem;
+  padding: .6rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(255,255,255,.03);
+}
+.resource-metrics { display: flex; gap: .7rem; align-items: center; font-weight: 700; }
+.delta.positive { color: #52d98c; }
+.delta.negative { color: #ff6f7a; }
+.delta.neutral { color: #97a6bf; }
+.price { color: var(--accent); }
