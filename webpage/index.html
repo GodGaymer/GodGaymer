@@ -22,9 +22,14 @@
     </header>
 
     <section class="grid-layout">
-      <article class="card span-2">
+      <article class="card">
         <h2>Command Overview</h2>
         <div id="statsGrid" class="stats-grid"></div>
+      </article>
+
+      <article class="card">
+        <h2>Campaign Ops</h2>
+        <div id="campaignPanel" class="campaign"></div>
       </article>
 
       <article class="card span-2">
@@ -68,6 +73,14 @@
               <text id="map-label-ashen" class="map-value" x="514" y="205">25%</text>
             </g>
           </svg>
+        </div>
+        <div class="sector-cmd">
+          <div id="selectedSectorInfo" class="subtle">Select a sector node to issue strategic actions.</div>
+          <div class="inline wrap">
+            <button id="fortifySectorBtn" class="btn ghost">Fortify (300 cr)</button>
+            <button id="scanSectorBtn" class="btn ghost">Deep Scan (220 cr)</button>
+            <button id="extractSectorBtn" class="btn">Extract Surge (260 cr)</button>
+          </div>
         </div>
       </article>
 

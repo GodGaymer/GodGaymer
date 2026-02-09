@@ -1,4 +1,4 @@
-const STORAGE_KEY = "orbital-syndicate-save-v3";
+const STORAGE_KEY = "orbital-syndicate-save-v4";
 const TICK_MS = 3000;
 const GRID_SIZE = 8;
 
@@ -34,6 +34,12 @@ const upgrades = [
 
 const createGrid = () => Array.from({ length: GRID_SIZE * GRID_SIZE }, (_, i) => ({ type: i < 4 ? "habitat" : "empty", boost: 1 + Math.random() * 0.5 }));
 
+const newObjectives = () => ([
+  { id: "bankroll", label: "Reach 12,000 credits", type: "credits", target: 12000 },
+  { id: "control", label: "Reach 60% average influence", type: "influence", target: 60 },
+  { id: "contracts", label: "Complete 5 contracts", type: "contracts", target: 5 }
+]);
+
 function createInitialState() {
   return {
     credits: 2200,
@@ -41,12 +47,21 @@ function createInitialState() {
     fleetSize: 3,
     extractionRate: 1,
     selectedTile: 0,
+    selectedSector: "ceres",
+    gameOver: false,
+    completedContracts: 0,
     grid: createGrid(),
     inventory: Object.fromEntries(resources.map((r) => [r.key, 30])),
     markets: Object.fromEntries(resources.map((r) => [r.key, r.basePrice])),
     territories: Object.fromEntries(belts.map((b) => [b.key, 25])),
     upgrades: Object.fromEntries(upgrades.map((u) => [u.key, 0])),
     contracts: [],
+    campaign: {
+      chapter: 1,
+      threat: 14,
+      status: "active",
+      objectives: newObjectives()
+    },
     rivals: [
       { name: "Nova Drillers", strength: 1.05, credits: 2400, rep: 16 },
       { name: "Eclipse Cartel", strength: 1.22, credits: 3200, rep: 21 },
@@ -59,6 +74,7 @@ function createInitialState() {
 
 const el = {
   statsGrid: document.getElementById("statsGrid"),
+  campaignPanel: document.getElementById("campaignPanel"),
   sectorGrid: document.getElementById("sectorGrid"),
   buildActions: document.getElementById("buildActions"),
   beltList: document.getElementById("beltList"),
@@ -69,6 +85,10 @@ const el = {
   contracts: document.getElementById("contracts"),
   leaderboard: document.getElementById("leaderboard"),
   eventLog: document.getElementById("eventLog"),
+  selectedSectorInfo: document.getElementById("selectedSectorInfo"),
+  fortifySectorBtn: document.getElementById("fortifySectorBtn"),
+  scanSectorBtn: document.getElementById("scanSectorBtn"),
+  extractSectorBtn: document.getElementById("extractSectorBtn"),
   refineBtn: document.getElementById("refineBtn"),
   sellBtn: document.getElementById("sellBtn"),
   buyBtn: document.getElementById("buyBtn"),
@@ -85,7 +105,17 @@ if (!state.contracts.length) spawnContracts();
 function loadState() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : createInitialState();
+    const parsed = raw ? JSON.parse(raw) : createInitialState();
+    return {
+      ...createInitialState(),
+      ...parsed,
+      campaign: {
+        ...createInitialState().campaign,
+        ...(parsed.campaign || {})
+      },
+      selectedSector: parsed.selectedSector || "ceres",
+      completedContracts: parsed.completedContracts || 0
+    };
   } catch {
     return createInitialState();
   }
@@ -94,10 +124,11 @@ function loadState() {
 const saveState = () => localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 const formatNumber = (num) => Intl.NumberFormat().format(Math.round(num));
 const priceFor = (key) => state.markets[key] || 0;
+const avgInfluence = () => belts.reduce((sum, b) => sum + state.territories[b.key], 0) / belts.length;
 
 function logEvent(text) {
   state.log.unshift(`[T+${state.ticks}] ${text}`);
-  state.log = state.log.slice(0, 40);
+  state.log = state.log.slice(0, 50);
 }
 
 function spawnContracts() {
@@ -110,7 +141,35 @@ function spawnContracts() {
 
 const countBuildings = (type) => state.grid.filter((tile) => tile.type === type).length;
 
+function objectiveProgress(objective) {
+  if (objective.type === "credits") return state.credits;
+  if (objective.type === "influence") return avgInfluence();
+  return state.completedContracts;
+}
+
+function updateCampaign() {
+  const defenseCount = countBuildings("defense");
+  const pressure = Math.max(0, 1.6 - defenseCount * 0.12 - state.upgrades.security * 0.18);
+  state.campaign.threat = Math.max(0, Math.min(100, state.campaign.threat + pressure));
+
+  const finished = state.campaign.objectives.every((objective) => objectiveProgress(objective) >= objective.target);
+
+  if (finished && state.campaign.status === "active") {
+    state.campaign.status = "victory";
+    state.gameOver = true;
+    logEvent("Campaign objective complete. You secured orbital supremacy.");
+  }
+
+  if (state.campaign.threat >= 100 && state.campaign.status === "active") {
+    state.campaign.status = "defeat";
+    state.gameOver = true;
+    logEvent("Threat reached critical mass. Rival coalitions overwhelmed your lanes.");
+  }
+}
+
 function simulateTick() {
+  if (state.gameOver) return;
+
   state.ticks += 1;
   const mineCount = countBuildings("mine");
   const refineryCount = countBuildings("refinery");
@@ -162,6 +221,7 @@ function simulateTick() {
     logEvent("New federation contracts have been posted.");
   }
 
+  updateCampaign();
   saveState();
   render();
 }
@@ -188,7 +248,9 @@ function maybeTriggerSectorEvent() {
 }
 
 function runAction(action) {
+  if (state.gameOver) return;
   action();
+  updateCampaign();
   saveState();
   render();
 }
@@ -212,7 +274,42 @@ function updateMapVisuals() {
     el.mapNodes[belt.key].setAttribute("r", `${pulse}`);
     el.mapNodes[belt.key].style.opacity = `${0.42 + influence / 180}`;
     el.mapRoutes[belt.key].style.strokeWidth = `${1.5 + influence / 45}`;
+    el.mapNodes[belt.key].classList.toggle("active", state.selectedSector === belt.key);
   });
+
+  const selected = belts.find((belt) => belt.key === state.selectedSector);
+  const influence = Math.round(state.territories[selected.key]);
+  el.selectedSectorInfo.textContent = `${selected.label} · Influence ${influence}% · Risk ${Math.round(selected.risk * 100)}%`;
+}
+
+function renderCampaign() {
+  const threat = Math.round(state.campaign.threat);
+  const objectivesMarkup = state.campaign.objectives.map((objective) => {
+    const current = objectiveProgress(objective);
+    const pct = Math.min(100, (current / objective.target) * 100);
+    return `
+      <div class="objective">
+        <strong>${objective.label}</strong>
+        <small>${formatNumber(current)} / ${formatNumber(objective.target)}</small>
+        <div class="progress"><span style="width:${pct}%"></span></div>
+      </div>
+    `;
+  }).join("");
+
+  const statusText = state.campaign.status === "active"
+    ? `Threat Level ${threat}%`
+    : state.campaign.status === "victory"
+      ? "Victory Achieved"
+      : "Defeat: Coalition Overrun";
+
+  el.campaignPanel.innerHTML = `
+    <div class="objective">
+      <strong>Chapter ${state.campaign.chapter}</strong>
+      <small>${statusText}</small>
+      <div class="progress"><span style="width:${threat}%"></span></div>
+    </div>
+    ${objectivesMarkup}
+  `;
 }
 
 function renderBuildActions() {
@@ -222,7 +319,7 @@ function renderBuildActions() {
     const row = document.createElement("button");
     row.className = "btn ghost";
     row.textContent = `${build.icon} ${build.label} (${formatNumber(build.cost)} cr)`;
-    row.disabled = state.credits < build.cost;
+    row.disabled = state.credits < build.cost || state.gameOver;
     row.onclick = () => runAction(() => {
       if (state.credits < build.cost) return;
       const tile = state.grid[state.selectedTile];
@@ -242,8 +339,8 @@ function render() {
     ["Credits", `${formatNumber(state.credits)} cr`],
     ["Reputation", state.reputation.toFixed(1)],
     ["Fleet Size", formatNumber(state.fleetSize)],
+    ["Avg Influence", `${avgInfluence().toFixed(1)}%`],
     ["Net Worth", `${formatNumber(netWorth)} cr`],
-    ["Mining Districts", countBuildings("mine")],
     ["Ticks", formatNumber(state.ticks)]
   ];
   stats.forEach(([label, value]) => {
@@ -253,6 +350,7 @@ function render() {
     el.statsGrid.appendChild(tile);
   });
 
+  renderCampaign();
   renderGrid();
   renderBuildActions();
   updateMapVisuals();
@@ -307,6 +405,7 @@ function render() {
       state.inventory[contract.resource] -= contract.amount;
       state.credits += contract.payout;
       state.reputation += contract.rep;
+      state.completedContracts += 1;
       state.contracts = state.contracts.filter((c) => c.id !== contract.id);
       if (!state.contracts.length) spawnContracts();
       logEvent("Contract completed successfully.");
@@ -355,6 +454,43 @@ el.buyBtn.onclick = () => runAction(() => {
   state.credits -= cost;
   state.inventory[key] += amount;
   logEvent(`Purchased ${amount} ${key} for ${formatNumber(cost)} credits.`);
+});
+
+el.fortifySectorBtn.onclick = () => runAction(() => {
+  const cost = 300;
+  if (state.credits < cost) return;
+  state.credits -= cost;
+  state.territories[state.selectedSector] = Math.min(95, state.territories[state.selectedSector] + 12);
+  state.campaign.threat = Math.max(0, state.campaign.threat - 8);
+  logEvent(`Fortification teams hardened ${state.selectedSector.toUpperCase()} defenses.`);
+});
+
+el.scanSectorBtn.onclick = () => runAction(() => {
+  const cost = 220;
+  if (state.credits < cost) return;
+  state.credits -= cost;
+  const resource = resources[Math.floor(Math.random() * 4)];
+  state.inventory[resource.key] += 22;
+  state.territories[state.selectedSector] = Math.min(95, state.territories[state.selectedSector] + 4);
+  logEvent(`Deep scan in ${state.selectedSector.toUpperCase()} found bonus ${resource.label}.`);
+});
+
+el.extractSectorBtn.onclick = () => runAction(() => {
+  const cost = 260;
+  if (state.credits < cost) return;
+  state.credits -= cost;
+  const belt = belts.find((b) => b.key === state.selectedSector);
+  Object.entries(belt.richness).forEach(([res, richness]) => {
+    state.inventory[res] += 14 * richness;
+  });
+  state.campaign.threat = Math.min(100, state.campaign.threat + 5);
+  logEvent(`Extraction surge executed at ${belt.label}. Output spiked but threat increased.`);
+});
+
+Object.entries(el.mapNodes).forEach(([key, node]) => {
+  node.onclick = () => runAction(() => {
+    state.selectedSector = key;
+  });
 });
 
 el.tickBoostBtn.onclick = () => simulateTick();

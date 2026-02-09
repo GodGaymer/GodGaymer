@@ -169,3 +169,13 @@ select,input {
   .span-2 { grid-column: span 1; }
   .topbar { flex-direction: column; align-items: flex-start; }
 }
+
+
+.campaign { margin-top: .75rem; display: grid; gap: .45rem; }
+.campaign .objective { border: 1px solid var(--border); border-radius: 10px; padding: .55rem; background: rgba(255,255,255,.03); }
+.campaign .objective strong { display: block; }
+.progress { height: 7px; border-radius: 99px; background: rgba(255,255,255,.1); overflow: hidden; margin-top: .35rem; }
+.progress span { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-2)); }
+.sector-cmd { margin-top: .7rem; display: grid; gap: .45rem; }
+.map-node { cursor: pointer; }
+.map-node.active { stroke: #94ffca; stroke-width: 2.6; }
