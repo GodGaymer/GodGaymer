@@ -41,6 +41,8 @@ const newObjectives = () => ([
 ]);
 
 function createInitialState() {
+  const startingInventory = Object.fromEntries(resources.map((r) => [r.key, 30]));
+  const startingCapByResource = Object.fromEntries(resources.map((r) => [r.key, 400]));
   return {
     credits: 2200,
     reputation: 12,
@@ -51,9 +53,27 @@ function createInitialState() {
     gameOver: false,
     completedContracts: 0,
     grid: createGrid(),
-    inventory: Object.fromEntries(resources.map((r) => [r.key, 30])),
-    previousInventorySnapshot: Object.fromEntries(resources.map((r) => [r.key, 30])),
+    inventory: { ...startingInventory },
+    previousInventorySnapshot: { ...startingInventory },
     resourceDeltas: Object.fromEntries(resources.map((r) => [r.key, { current: 30, lastTick: 30, delta: 0 }])),
+    storage: {
+      sharedCapacity: 2200,
+      perResource: startingCapByResource
+    },
+    throughput: {
+      extractPerTick: 42,
+      refinePerTick: 24,
+      buyPerTick: 50
+    },
+    ledger: {
+      waste: Object.fromEntries(resources.map((r) => [r.key, 0]))
+    },
+    tickFlow: {
+      extract: 0,
+      refine: 0,
+      buy: 0,
+      overflow: Object.fromEntries(resources.map((r) => [r.key, 0]))
+    },
     markets: Object.fromEntries(resources.map((r) => [r.key, r.basePrice])),
     territories: Object.fromEntries(belts.map((b) => [b.key, 25])),
     upgrades: Object.fromEntries(upgrades.map((u) => [u.key, 0])),
@@ -132,6 +152,35 @@ function loadState() {
       return [r.key, { current, lastTick, delta: current - lastTick }];
     }));
 
+    const fallbackPerResource = Object.fromEntries(resources.map((r) => [r.key, 400]));
+    merged.storage = {
+      sharedCapacity: Number(merged.storage?.sharedCapacity) || 2200,
+      perResource: {
+        ...fallbackPerResource,
+        ...(merged.storage?.perResource || {})
+      }
+    };
+
+    merged.throughput = {
+      extractPerTick: Number(merged.throughput?.extractPerTick) || 42,
+      refinePerTick: Number(merged.throughput?.refinePerTick) || 24,
+      buyPerTick: Number(merged.throughput?.buyPerTick) || 50
+    };
+
+    merged.ledger = {
+      waste: {
+        ...Object.fromEntries(resources.map((r) => [r.key, 0])),
+        ...(merged.ledger?.waste || {})
+      }
+    };
+
+    merged.tickFlow = {
+      extract: 0,
+      refine: 0,
+      buy: 0,
+      overflow: Object.fromEntries(resources.map((r) => [r.key, 0]))
+    };
+
     return merged;
   } catch {
     return createInitialState();
@@ -142,6 +191,88 @@ const saveState = () => localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
 const formatNumber = (num) => Intl.NumberFormat().format(Math.round(num));
 const priceFor = (key) => state.markets[key] || 0;
 const avgInfluence = () => belts.reduce((sum, b) => sum + state.territories[b.key], 0) / belts.length;
+
+const inventoryTotal = () => resources.reduce((sum, r) => sum + (state.inventory[r.key] || 0), 0);
+const storageCapacity = () => {
+  const logisticsCount = countBuildings("logistics");
+  const logisticsBoost = 1 + state.upgrades.logistics * upgrades[1].effect + logisticsCount * 0.012;
+  return {
+    shared: state.storage.sharedCapacity * logisticsBoost,
+    perResource: Object.fromEntries(resources.map((r) => [r.key, (state.storage.perResource[r.key] || 0) * logisticsBoost]))
+  };
+};
+
+function availableStorageFor(resourceKey) {
+  const capacity = storageCapacity();
+  const perResourceRemaining = Math.max(0, (capacity.perResource[resourceKey] || 0) - (state.inventory[resourceKey] || 0));
+  const sharedRemaining = Math.max(0, capacity.shared - inventoryTotal());
+  return Math.max(0, Math.min(perResourceRemaining, sharedRemaining));
+}
+
+function throughputLimits() {
+  const logisticsCount = countBuildings("logistics");
+  const refineryCount = countBuildings("refinery");
+  const logisticsBoost = 1 + state.upgrades.logistics * upgrades[1].effect + logisticsCount * 0.012;
+  return {
+    extract: state.throughput.extractPerTick * logisticsBoost,
+    refine: state.throughput.refinePerTick * (1 + refineryCount * 0.03),
+    buy: state.throughput.buyPerTick * logisticsBoost
+  };
+}
+
+function resetTickFlow() {
+  state.tickFlow = {
+    extract: 0,
+    refine: 0,
+    buy: 0,
+    overflow: Object.fromEntries(resources.map((r) => [r.key, 0]))
+  };
+}
+
+function applyStorageClampAndLog() {
+  const capacity = storageCapacity();
+  let sharedOver = Math.max(0, inventoryTotal() - capacity.shared);
+  const overflowed = [];
+
+  resources.forEach((resource) => {
+    const key = resource.key;
+    const resourceCap = capacity.perResource[key] || 0;
+    const over = Math.max(0, (state.inventory[key] || 0) - resourceCap);
+    if (over > 0) {
+      state.inventory[key] -= over;
+      state.ledger.waste[key] += over;
+      state.tickFlow.overflow[key] += over;
+      overflowed.push([key, over]);
+      sharedOver = Math.max(0, sharedOver - over);
+    }
+  });
+
+  if (sharedOver > 0) {
+    const byStock = resources
+      .map((resource) => [resource.key, state.inventory[resource.key] || 0])
+      .sort((a, b) => b[1] - a[1]);
+
+    for (const [key, amount] of byStock) {
+      if (sharedOver <= 0) break;
+      const loss = Math.min(sharedOver, amount);
+      if (loss <= 0) continue;
+      state.inventory[key] -= loss;
+      state.ledger.waste[key] += loss;
+      state.tickFlow.overflow[key] += loss;
+      overflowed.push([key, loss]);
+      sharedOver -= loss;
+    }
+  }
+
+  if (overflowed.length) {
+    const combined = overflowed.reduce((acc, [key, value]) => {
+      acc[key] = (acc[key] || 0) + value;
+      return acc;
+    }, {});
+    const [topKey, topValue] = Object.entries(combined).sort((a, b) => b[1] - a[1])[0];
+    logEvent(`Overflow loss: ${topKey} -${topValue.toFixed(1)} units this tick.`);
+  }
+}
 
 function updateResourceDeltas(previousSnapshot = state.previousInventorySnapshot || {}) {
   const snapshot = {};
@@ -201,6 +332,7 @@ function simulateTick() {
   const previousSnapshot = { ...(state.previousInventorySnapshot || {}) };
 
   state.ticks += 1;
+  resetTickFlow();
   const mineCount = countBuildings("mine");
   const refineryCount = countBuildings("refinery");
   const logisticsCount = countBuildings("logistics");
@@ -217,18 +349,28 @@ function simulateTick() {
     const base = state.extractionRate * fleetsHere * drillBoost * (0.6 + state.territories[belt.key] / 100) * riskPenalty;
 
     Object.entries(belt.richness).forEach(([res, richness]) => {
-      state.inventory[res] += base * richness;
+      const rawAmount = base * richness;
+      const extractLimit = Math.max(0, throughputLimits().extract - state.tickFlow.extract);
+      const allowed = Math.max(0, Math.min(rawAmount, extractLimit, availableStorageFor(res)));
+      state.inventory[res] += allowed;
+      state.tickFlow.extract += allowed;
     });
 
     state.territories[belt.key] = Math.max(8, Math.min(95, state.territories[belt.key] + (Math.random() * 3 - 1.5) + defenseCount * 0.05));
   });
 
   if (refineryCount > 0) {
-    const refined = Math.min(state.inventory.iron, state.inventory.cobalt, refineryCount * 0.8);
-    state.inventory.iron -= refined;
-    state.inventory.cobalt -= refined;
-    state.inventory.alloy += refined * 1.2;
+    const refineLimit = Math.max(0, throughputLimits().refine - state.tickFlow.refine);
+    const refined = Math.min(state.inventory.iron, state.inventory.cobalt, refineryCount * 0.8, refineLimit);
+    const alloyGain = Math.min(refined * 1.2, availableStorageFor("alloy"));
+    const consumed = alloyGain / 1.2;
+    state.inventory.iron -= consumed;
+    state.inventory.cobalt -= consumed;
+    state.inventory.alloy += alloyGain;
+    state.tickFlow.refine += consumed;
   }
+
+  applyStorageClampAndLog();
 
   resources.forEach((res) => {
     const rivalPressure = state.rivals.reduce((sum, r) => sum + r.strength, 0) / state.rivals.length;
@@ -282,6 +424,7 @@ function runAction(action) {
   if (state.gameOver) return;
   const previousSnapshot = { ...(state.previousInventorySnapshot || {}) };
   action();
+  applyStorageClampAndLog();
   updateCampaign();
   updateResourceDeltas(previousSnapshot);
   saveState();
@@ -317,6 +460,7 @@ function updateMapVisuals() {
 
 function renderResourcePanel() {
   el.resourcePanel.innerHTML = "";
+  const capacity = storageCapacity();
   resources.forEach((resource) => {
     const metrics = state.resourceDeltas?.[resource.key] || {
       current: state.inventory[resource.key] ?? 0,
@@ -324,14 +468,17 @@ function renderResourcePanel() {
       delta: 0
     };
     const row = document.createElement("div");
-    row.className = "resource-row";
+    const usedPct = (metrics.current / Math.max(1, capacity.perResource[resource.key])) * 100;
+    const atCap = usedPct >= 98;
+    const overflowed = (state.tickFlow?.overflow?.[resource.key] || 0) > 0;
+    row.className = `resource-row${atCap ? " at-cap" : ""}${overflowed ? " overflowed" : ""}`;
     const deltaClass = metrics.delta > 0 ? "positive" : metrics.delta < 0 ? "negative" : "neutral";
     const deltaPrefix = metrics.delta > 0 ? "+" : "";
 
     row.innerHTML = `
       <div>
         <strong>${resource.label}</strong>
-        <small>Stock ${formatNumber(metrics.current)}</small>
+        <small>Stock ${formatNumber(metrics.current)} / ${formatNumber(capacity.perResource[resource.key])} (${usedPct.toFixed(0)}%)</small>
       </div>
       <div class="resource-metrics">
         <span class="delta ${deltaClass}">${deltaPrefix}${metrics.delta.toFixed(1)} / tick</span>
@@ -395,17 +542,33 @@ function renderBuildActions() {
 function render() {
   el.statsGrid.innerHTML = "";
   const netWorth = state.credits + resources.reduce((sum, r) => sum + state.inventory[r.key] * priceFor(r.key), 0);
+  const capacity = storageCapacity();
+  const usedCapacity = inventoryTotal();
+  const usedPct = (usedCapacity / Math.max(1, capacity.shared)) * 100;
+  const limits = throughputLimits();
+  const bottlenecks = [];
+  if (state.tickFlow.extract >= limits.extract * 0.98) bottlenecks.push("Extract TPS capped");
+  if (state.tickFlow.refine >= limits.refine * 0.98) bottlenecks.push("Refine TPS capped");
+  if (state.tickFlow.buy >= limits.buy * 0.98) bottlenecks.push("Buy TPS capped");
+  const topOverflow = Object.entries(state.tickFlow.overflow || {}).sort((a, b) => b[1] - a[1])[0];
+  const topOverflowLabel = topOverflow && topOverflow[1] > 0
+    ? `${resources.find((r) => r.key === topOverflow[0]).label} (${topOverflow[1].toFixed(1)})`
+    : "None";
+
   const stats = [
     ["Credits", `${formatNumber(state.credits)} cr`],
     ["Reputation", state.reputation.toFixed(1)],
     ["Fleet Size", formatNumber(state.fleetSize)],
     ["Avg Influence", `${avgInfluence().toFixed(1)}%`],
     ["Net Worth", `${formatNumber(netWorth)} cr`],
+    ["Capacity", `${usedPct.toFixed(0)}% used`],
+    ["Bottlenecks", bottlenecks.length ? bottlenecks.join(" · ") : "Stable"],
+    ["Top Overflow", topOverflowLabel],
     ["Ticks", formatNumber(state.ticks)]
   ];
   stats.forEach(([label, value]) => {
     const tile = document.createElement("div");
-    tile.className = "stat-tile";
+    tile.className = `stat-tile${label === "Capacity" && usedPct >= 95 ? " warn" : ""}${label === "Top Overflow" && topOverflowLabel !== "None" ? " overflow" : ""}`;
     tile.innerHTML = `<span>${label}</span><strong>${value}</strong>`;
     el.statsGrid.appendChild(tile);
   });
@@ -490,10 +653,22 @@ function render() {
 el.refineBtn.onclick = () => runAction(() => {
   const key = el.refineSelect.value;
   const amount = Math.max(1, Math.floor(Number(el.tradeAmount.value) || 1));
-  if (state.inventory[key] < amount) return;
-  state.inventory[key] -= amount;
-  state.inventory.alloy += Math.round(amount * 0.8 + countBuildings("refinery") * 0.2);
-  logEvent(`Refinery converted ${amount} ${key} into Star Alloy.`);
+  const refineRoom = Math.max(0, throughputLimits().refine - state.tickFlow.refine);
+  const maxByStorage = Math.floor(availableStorageFor("alloy") / 0.8);
+  const allowed = Math.min(amount, state.inventory[key], refineRoom, maxByStorage);
+  if (allowed <= 0) return;
+  state.inventory[key] -= allowed;
+  const alloyOut = Math.round(allowed * 0.8 + countBuildings("refinery") * 0.2);
+  const storable = Math.min(alloyOut, availableStorageFor("alloy"));
+  state.inventory.alloy += storable;
+  state.tickFlow.refine += allowed;
+  if (storable < alloyOut) {
+    const overflow = alloyOut - storable;
+    state.ledger.waste.alloy += overflow;
+    state.tickFlow.overflow.alloy += overflow;
+    logEvent(`Refine overflow: lost ${overflow.toFixed(1)} alloy.`);
+  }
+  logEvent(`Refinery converted ${allowed} ${key} into Star Alloy.`);
 });
 
 el.sellBtn.onclick = () => runAction(() => {
@@ -510,11 +685,14 @@ el.sellBtn.onclick = () => runAction(() => {
 el.buyBtn.onclick = () => runAction(() => {
   const key = el.marketSelect.value;
   const amount = Math.max(1, Math.floor(Number(el.tradeAmount.value) || 1));
-  const cost = amount * priceFor(key);
-  if (state.credits < cost) return;
+  const buyRoom = Math.max(0, throughputLimits().buy - state.tickFlow.buy);
+  const allowed = Math.min(amount, buyRoom, availableStorageFor(key));
+  const cost = allowed * priceFor(key);
+  if (allowed <= 0 || state.credits < cost) return;
   state.credits -= cost;
-  state.inventory[key] += amount;
-  logEvent(`Purchased ${amount} ${key} for ${formatNumber(cost)} credits.`);
+  state.inventory[key] += allowed;
+  state.tickFlow.buy += allowed;
+  logEvent(`Purchased ${allowed} ${key} for ${formatNumber(cost)} credits.`);
 });
 
 el.fortifySectorBtn.onclick = () => runAction(() => {
@@ -539,13 +717,23 @@ el.scanSectorBtn.onclick = () => runAction(() => {
 el.extractSectorBtn.onclick = () => runAction(() => {
   const cost = 260;
   if (state.credits < cost) return;
-  state.credits -= cost;
   const belt = belts.find((b) => b.key === state.selectedSector);
+  let extracted = 0;
   Object.entries(belt.richness).forEach(([res, richness]) => {
-    state.inventory[res] += 14 * richness;
+    const requested = 14 * richness;
+    const extractRoom = Math.max(0, throughputLimits().extract - state.tickFlow.extract);
+    const allowed = Math.max(0, Math.min(requested, extractRoom, availableStorageFor(res)));
+    state.inventory[res] += allowed;
+    state.tickFlow.extract += allowed;
+    extracted += allowed;
   });
+  if (extracted <= 0) {
+    logEvent("Extraction surge blocked by storage or logistics bottlenecks.");
+    return;
+  }
+  state.credits -= cost;
   state.campaign.threat = Math.min(100, state.campaign.threat + 5);
-  logEvent(`Extraction surge executed at ${belt.label}. Output spiked but threat increased.`);
+  logEvent(`Extraction surge at ${belt.label}: +${extracted.toFixed(1)} ore.`);
 });
 
 Object.entries(el.mapNodes).forEach(([key, node]) => {
