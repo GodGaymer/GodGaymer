@@ -197,6 +197,8 @@ select,input {
 .delta.neutral { color: #97a6bf; }
 .price { color: var(--accent); }
 
+.policy-row.selected { border-color: var(--accent-2); background: rgba(148,255,202,.08); }
+.policy-row button:disabled { border-color: var(--muted); color: var(--muted); }
 .stat-tile.warn {
   border-color: rgba(255, 193, 92, 0.75);
   box-shadow: inset 0 0 0 1px rgba(255, 193, 92, 0.22);
