@@ -32,6 +32,18 @@ const upgrades = [
   { key: "security", label: "Fleet Security", baseCost: 520, effect: 0.08 }
 ];
 
+const BUILDING_UPKEEP = {
+  habitat: 5,
+  mine: 11,
+  refinery: 14,
+  logistics: 10,
+  defense: 12
+};
+const FLEET_OPERATING_BASE = 7;
+const THREAT_INSURANCE_FACTOR = 0.18;
+const LOAN_COOLDOWN_TICKS = 7;
+const LOAN_BASE_INTEREST = 0.11;
+
 const createGrid = () => Array.from({ length: GRID_SIZE * GRID_SIZE }, (_, i) => ({ type: i < 4 ? "habitat" : "empty", boost: 1 + Math.random() * 0.5 }));
 
 const newObjectives = () => ([
@@ -70,7 +82,19 @@ function createInitialState() {
       { name: "Astra Forge", strength: 1.12, credits: 2800, rep: 19 }
     ],
     log: ["Syndicate charter approved. Begin expansion into orbital belts."],
-    ticks: 0
+    ticks: 0,
+    emergencyLoan: {
+      cooldownUntilTick: 0,
+      interestRate: LOAN_BASE_INTEREST,
+      principal: 0
+    },
+    economy: {
+      projectedIncome: 0,
+      projectedCosts: 0,
+      projectedNet: 0,
+      lastTickCosts: 0,
+      inNegativeCash: false
+    }
   };
 }
 
@@ -97,6 +121,7 @@ const el = {
   buyBtn: document.getElementById("buyBtn"),
   resetBtn: document.getElementById("resetBtn"),
   tickBoostBtn: document.getElementById("tickBoostBtn"),
+  emergencyLoanBtn: document.getElementById("emergencyLoanBtn"),
   mapLabels: Object.fromEntries(belts.map((belt) => [belt.key, document.getElementById(`map-label-${belt.key}`)])),
   mapNodes: Object.fromEntries(belts.map((belt) => [belt.key, document.getElementById(`node-${belt.key}`)])),
   mapRoutes: Object.fromEntries(belts.map((belt) => [belt.key, document.getElementById(`route-${belt.key}`)]))
@@ -118,7 +143,15 @@ function loadState() {
         ...(parsed.campaign || {})
       },
       selectedSector: parsed.selectedSector || "ceres",
-      completedContracts: parsed.completedContracts || 0
+      completedContracts: parsed.completedContracts || 0,
+      emergencyLoan: {
+        ...initial.emergencyLoan,
+        ...(parsed.emergencyLoan || {})
+      },
+      economy: {
+        ...initial.economy,
+        ...(parsed.economy || {})
+      }
     };
 
     const fallbackSnapshot = Object.fromEntries(resources.map((r) => [r.key, merged.inventory[r.key] ?? 0]));
@@ -195,6 +228,62 @@ function updateCampaign() {
   }
 }
 
+function computeEconomicProjection() {
+  const habitatCount = countBuildings("habitat");
+  const mineCount = countBuildings("mine");
+  const refineryCount = countBuildings("refinery");
+  const logisticsCount = countBuildings("logistics");
+  const defenseCount = countBuildings("defense");
+
+  const logisticsBoost = 1 + state.upgrades.logistics * upgrades[1].effect + logisticsCount * 0.012;
+  const income = 30 * logisticsBoost + habitatCount * 3 + state.reputation;
+
+  const buildingUpkeep = (habitatCount * BUILDING_UPKEEP.habitat)
+    + (mineCount * BUILDING_UPKEEP.mine)
+    + (refineryCount * BUILDING_UPKEEP.refinery)
+    + (logisticsCount * BUILDING_UPKEEP.logistics)
+    + (defenseCount * BUILDING_UPKEEP.defense);
+  const fleetCost = state.fleetSize * FLEET_OPERATING_BASE * (1 + state.fleetSize / 14);
+  const insuranceCost = state.campaign.threat > 18 ? state.campaign.threat * THREAT_INSURANCE_FACTOR : 0;
+  const loanInterest = state.emergencyLoan.principal > 0 ? state.emergencyLoan.principal * state.emergencyLoan.interestRate : 0;
+
+  const costs = buildingUpkeep + fleetCost + insuranceCost + loanInterest;
+  return {
+    income,
+    costs,
+    net: income - costs,
+    buildingUpkeep,
+    fleetCost,
+    insuranceCost,
+    loanInterest
+  };
+}
+
+function applyNegativeCashEffects() {
+  if (state.credits >= 0) {
+    if (state.economy.inNegativeCash) {
+      state.economy.inNegativeCash = false;
+      logEvent("Cash reserves restored above zero. Emergency austerity lifted.");
+    }
+    return;
+  }
+
+  if (!state.economy.inNegativeCash) {
+    state.economy.inNegativeCash = true;
+    logEvent("Negative cash state entered. Penalties activated.");
+  }
+
+  const deficitSeverity = Math.min(3.5, Math.abs(state.credits) / 900);
+  const repLoss = 0.15 + deficitSeverity * 0.18;
+  state.reputation = Math.max(0, state.reputation - repLoss);
+  state.extractionRate = Math.max(0.6, state.extractionRate - 0.03 - deficitSeverity * 0.01);
+
+  if (state.emergencyLoan.principal > 0) {
+    const stressInterest = state.emergencyLoan.principal * 0.02;
+    state.credits -= stressInterest;
+  }
+}
+
 function simulateTick() {
   if (state.gameOver) return;
 
@@ -237,8 +326,22 @@ function simulateTick() {
     state.markets[res.key] = Math.max(3, state.markets[res.key] * delta);
   });
 
-  state.credits += 30 * logisticsBoost + habitatCount * 3 + state.reputation;
+  const economy = computeEconomicProjection();
+  state.economy.projectedIncome = economy.income;
+  state.economy.projectedCosts = economy.costs;
+  state.economy.projectedNet = economy.net;
+  state.economy.lastTickCosts = economy.costs;
+
+  const upkeepSpikeThreshold = Math.max(90, (state.economy.previousTickCosts || 0) * 1.25);
+  if (economy.costs > upkeepSpikeThreshold && state.ticks > 1) {
+    logEvent(`Upkeep spike detected: ${formatNumber(economy.costs)} cr/tick (Bld ${formatNumber(economy.buildingUpkeep)}, Fleet ${formatNumber(economy.fleetCost)}, Ins ${formatNumber(economy.insuranceCost)}).`);
+  }
+
+  state.credits += economy.income - economy.costs;
+  state.economy.previousTickCosts = economy.costs;
+
   state.reputation += 0.08 + habitatCount * 0.005;
+  applyNegativeCashEffects();
 
   state.rivals.forEach((rival) => {
     rival.credits += 40 * rival.strength + Math.random() * 20;
@@ -401,6 +504,7 @@ function render() {
     ["Fleet Size", formatNumber(state.fleetSize)],
     ["Avg Influence", `${avgInfluence().toFixed(1)}%`],
     ["Net Worth", `${formatNumber(netWorth)} cr`],
+    ["Next Tick Δ", `${state.economy.projectedNet >= 0 ? "+" : ""}${formatNumber(state.economy.projectedNet)} cr (${formatNumber(state.economy.projectedIncome)} in / ${formatNumber(state.economy.projectedCosts)} out)`],
     ["Ticks", formatNumber(state.ticks)]
   ];
   stats.forEach(([label, value]) => {
@@ -409,6 +513,11 @@ function render() {
     tile.innerHTML = `<span>${label}</span><strong>${value}</strong>`;
     el.statsGrid.appendChild(tile);
   });
+
+  const projection = computeEconomicProjection();
+  state.economy.projectedIncome = projection.income;
+  state.economy.projectedCosts = projection.costs;
+  state.economy.projectedNet = projection.net;
 
   renderCampaign();
   renderResourcePanel();
@@ -484,6 +593,12 @@ function render() {
     el.leaderboard.appendChild(row);
   });
 
+  const cooldown = Math.max(0, state.emergencyLoan.cooldownUntilTick - state.ticks);
+  el.emergencyLoanBtn.disabled = state.gameOver || cooldown > 0;
+  el.emergencyLoanBtn.textContent = cooldown > 0
+    ? `Emergency Loan (${cooldown}t cd)`
+    : `Emergency Loan (${Math.round(state.emergencyLoan.interestRate * 100)}% int)`;
+
   el.eventLog.innerHTML = state.log.map((item) => `<p>${item}</p>`).join("");
 }
 
@@ -552,6 +667,20 @@ Object.entries(el.mapNodes).forEach(([key, node]) => {
   node.onclick = () => runAction(() => {
     state.selectedSector = key;
   });
+});
+
+el.emergencyLoanBtn.onclick = () => runAction(() => {
+  if (state.ticks < state.emergencyLoan.cooldownUntilTick) return;
+
+  const debtLoad = 1 + state.emergencyLoan.principal / 2000;
+  const payout = Math.round((900 + state.campaign.threat * 6) / debtLoad);
+
+  state.credits += payout;
+  state.emergencyLoan.principal += payout;
+  state.emergencyLoan.interestRate = Math.min(0.42, state.emergencyLoan.interestRate + 0.04);
+  state.emergencyLoan.cooldownUntilTick = state.ticks + LOAN_COOLDOWN_TICKS;
+
+  logEvent(`Emergency loan approved: +${formatNumber(payout)} cr at ${Math.round(state.emergencyLoan.interestRate * 100)}% tick interest.`);
 });
 
 el.tickBoostBtn.onclick = () => simulateTick();
