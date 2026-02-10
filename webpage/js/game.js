@@ -126,6 +126,14 @@ const newObjectives = () => ([
 ]);
 
 function createInitialState() {
+  const marketIntel = Object.fromEntries(resources.map((r) => [r.key, {
+    demandIndex: 1,
+    trend: 0,
+    regime: "stable",
+    forecast: "stable",
+    history: [r.basePrice]
+  }]));
+
   const startingInventory = Object.fromEntries(resources.map((r) => [r.key, 30]));
   const startingCapByResource = Object.fromEntries(resources.map((r) => [r.key, 400]));
   return {
@@ -160,6 +168,9 @@ function createInitialState() {
       overflow: Object.fromEntries(resources.map((r) => [r.key, 0]))
     },
     markets: Object.fromEntries(resources.map((r) => [r.key, r.basePrice])),
+    marketIntel,
+    marketShocks: Object.fromEntries(resources.map((r) => [r.key, 0])),
+    marketRegimeCooldown: 0,
     refineryQueue: [],
     selectedRecipe: "components",
     ledger: { refinedIn: {}, refinedOut: {}, crafted: {} },
@@ -332,6 +343,25 @@ function loadState() {
       buy: 0,
       overflow: Object.fromEntries(resources.map((r) => [r.key, 0]))
     };
+
+    merged.marketShocks = {
+      ...Object.fromEntries(resources.map((r) => [r.key, 0])),
+      ...(parsed.marketShocks || {})
+    };
+    merged.marketRegimeCooldown = parsed.marketRegimeCooldown || 0;
+    merged.marketIntel = Object.fromEntries(resources.map((resource) => {
+      const previous = parsed.marketIntel?.[resource.key] || {};
+      const history = Array.isArray(previous.history) && previous.history.length
+        ? previous.history.slice(-8)
+        : [merged.markets[resource.key] ?? resource.basePrice];
+      return [resource.key, {
+        demandIndex: Number(previous.demandIndex) || 1,
+        trend: Number(previous.trend) || 0,
+        regime: previous.regime || "stable",
+        forecast: previous.forecast || "stable",
+        history
+      }];
+    }));
 
     return merged;
   } catch {
@@ -529,8 +559,53 @@ function spawnContracts() {
   state.contracts = Array.from({ length: 3 }, (_, i) => {
     const ore = resources[Math.floor(Math.random() * 4)];
     const amount = 40 + i * 28 + Math.floor(Math.random() * 20);
+    const hedge = Math.random() > 0.5;
+    const fixedPrice = Number((ore.basePrice * (1 + 0.08 + Math.random() * 0.18)).toFixed(2));
+    const payout = hedge
+      ? amount * fixedPrice
+      : amount * (priceFor(ore.key) + 3 + Math.random() * 2);
+    return {
+      id: `${Date.now()}-${i}`,
+      resource: ore.key,
+      amount,
+      kind: hedge ? "hedge" : "spot",
+      fixedPrice,
+      payout,
+      rep: 2 + i
+    };
+  });
+}
+
+const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+
+function updateMarketForecast(resourceKey) {
+  const intel = state.marketIntel[resourceKey];
+  const projected = intel.trend * 0.7 + (intel.demandIndex - 1) * 0.3 + (state.marketShocks[resourceKey] || 0) * 0.4;
+  intel.forecast = projected > 0.05 ? "rising" : projected < -0.05 ? "falling" : "stable";
+}
+
+function updateMarketRegimeChanges() {
+  if (state.marketRegimeCooldown > 0) {
+    state.marketRegimeCooldown -= 1;
+    return;
+  }
+
+  let boomCount = 0;
+  let slumpCount = 0;
+  resources.forEach((resource) => {
+    const intel = state.marketIntel[resource.key];
+    if (intel.regime === "boom") boomCount += 1;
+    if (intel.regime === "slump") slumpCount += 1;
     return { id: `${Date.now()}-${i}`, resource: ore.key, amount, payout: amount * (priceFor(ore.key) + 3), rep: 2 + i, expiresAt: state.ticks + 16 + i * 4 };
   });
+
+  if (boomCount >= 3) {
+    state.marketRegimeCooldown = 6;
+    logEvent("Ops Log: Market regime shift detected — broad boom conditions emerging.");
+  } else if (slumpCount >= 3) {
+    state.marketRegimeCooldown = 6;
+    logEvent("Ops Log: Market regime shift detected — sustained slump pressure across lanes.");
+  }
 }
 
 const countBuildings = (type) => state.grid.filter((tile) => tile.type === type).length;
@@ -691,6 +766,34 @@ function simulateTick() {
   applyStorageClampAndLog();
 
   resources.forEach((res) => {
+    const intel = state.marketIntel[res.key];
+    const stockPressure = clamp((state.inventory[res.key] - 140) / 700, -0.3, 0.35);
+    const rivalStockPressure = clamp((state.rivals.reduce((sum, rival) => sum + rival.strength, 0) / state.rivals.length - 1.05) * 0.18, -0.2, 0.2);
+    const demandDrift = (Math.random() - 0.5) * 0.08 + rivalStockPressure * 0.6 - stockPressure * 0.5;
+    intel.demandIndex = clamp(intel.demandIndex * 0.86 + (1 + demandDrift) * 0.14, 0.65, 1.45);
+
+    const eventShock = state.marketShocks[res.key] || 0;
+    const trendSignal = (intel.demandIndex - 1) * 0.24 - stockPressure * 0.13 + rivalStockPressure * 0.12 + eventShock * 0.2;
+    const nextTrend = clamp(intel.trend * 0.55 + trendSignal + (Math.random() - 0.5) * res.volatility * 0.7, -0.28, 0.28);
+    const delta = clamp(1 + nextTrend, 0.82, 1.2);
+
+    intel.trend = nextTrend;
+    state.markets[res.key] = Math.max(3, state.markets[res.key] * delta);
+    intel.history.push(state.markets[res.key]);
+    intel.history = intel.history.slice(-8);
+    state.marketShocks[res.key] = Math.abs(eventShock) < 0.01 ? 0 : eventShock * 0.72;
+
+    intel.regime = intel.demandIndex > 1.2 || nextTrend > 0.12
+      ? "boom"
+      : intel.demandIndex < 0.82 || nextTrend < -0.12
+        ? "slump"
+        : "stable";
+    updateMarketForecast(res.key);
+  });
+
+  updateMarketRegimeChanges();
+
+  state.credits += 30 * logisticsBoost + habitatCount * 3 + state.reputation;
     const rivalPressure = state.rivals.reduce((sum, r) => sum + r.strength, 0) / state.rivals.length;
     const ownStock = state.inventory[res.key] / 600;
     const baseShift = (Math.random() - 0.5) * res.volatility * volatilityMult;
@@ -828,6 +931,9 @@ function maybeTriggerSectorEvent() {
   const events = [
     () => {
       const target = resources[Math.floor(Math.random() * 4)];
+      state.marketShocks[target.key] = clamp((state.marketShocks[target.key] || 0) + 0.17, -0.25, 0.35);
+      state.marketIntel[target.key].demandIndex = clamp(state.marketIntel[target.key].demandIndex + 0.08, 0.65, 1.45);
+      logEvent(`Solar storm disrupted ${target.label} routes. Shockwave entered market models.`);
       state.markets[target.key] *= 1.14 + (hazardScale - 1) * 0.12;
       logEvent(`Solar storm disrupted ${target.label} routes. Prices surged.`);
     },
@@ -1066,6 +1172,16 @@ function render() {
     el.beltList.appendChild(row);
   });
 
+  const nonAlloyResources = resources.filter((r) => r.key !== "alloy");
+  el.refineSelect.innerHTML = nonAlloyResources.map((r) => `<option value="${r.key}">${r.label}</option>`).join("");
+  el.marketSelect.innerHTML = resources.map((r) => {
+    const intel = state.marketIntel[r.key];
+    const forecastLabel = intel.forecast === "rising"
+      ? "↗ rising next 3 ticks"
+      : intel.forecast === "falling"
+        ? "↘ falling next 3 ticks"
+        : "→ stable next 3 ticks";
+    return `<option value="${r.key}">${r.label} · ${priceFor(r.key).toFixed(1)} cr · Inv ${formatNumber(state.inventory[r.key])} · ${forecastLabel}</option>`;
   el.refineSelect.innerHTML = recipeList.map((recipe) => `<option value="${recipe.key}" ${recipe.key === state.selectedRecipe ? "selected" : ""}>${recipe.label} · ${recipe.tickTime}t</option>`).join("");
   const queueSummary = state.refineryQueue.slice(0, 3).map((entry) => {
     const recipe = recipes[entry.recipeKey];
@@ -1105,6 +1221,10 @@ function render() {
     const row = document.createElement("div");
     row.className = "row";
     const owned = state.inventory[contract.resource];
+    const contractTypeText = contract.kind === "hedge"
+      ? `Hedge @ ${contract.fixedPrice.toFixed(1)} cr/unit (fixed)`
+      : "Spot fulfillment (consumes market demand)";
+    row.innerHTML = `<div><strong>${resources.find((r) => r.key === contract.resource).label} Contract</strong><small>${contractTypeText} · Deliver ${contract.amount} · Reward ${formatNumber(contract.payout)} cr + ${contract.rep} rep</small></div><button class="btn ghost">${owned >= contract.amount ? "Complete" : `Need ${Math.ceil(contract.amount - owned)}`}</button>`;
     row.innerHTML = `<div><strong>${resources.find((r) => r.key === contract.resource).label} Contract</strong><small>Deliver ${contract.amount} · Reward ${formatNumber(contract.payout)} cr + ${contract.rep} rep · Due T+${contract.expiresAt}</small></div><button class="btn ghost">${owned >= contract.amount ? "Complete" : `Need ${Math.ceil(contract.amount - owned)}`}</button>`;
     const button = row.querySelector("button");
     button.disabled = owned < contract.amount;
@@ -1117,6 +1237,14 @@ function render() {
       state.ledger.sold[contract.resource] += contract.amount;
       state.reputation += contract.rep;
       state.completedContracts += 1;
+      if (contract.kind === "spot") {
+        const intel = state.marketIntel[contract.resource];
+        intel.demandIndex = clamp(intel.demandIndex - contract.amount / 850, 0.65, 1.45);
+        updateMarketForecast(contract.resource);
+        logEvent("Spot contract drained regional demand liquidity.");
+      } else {
+        logEvent("Hedge contract settled at fixed price, insulating against spot swings.");
+      }
       state.ledger.contractTotal += 1;
       if (state.ticks <= contract.expiresAt) state.ledger.contractOnTime += 1;
       state.contracts = state.contracts.filter((c) => c.id !== contract.id);
