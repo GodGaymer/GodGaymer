@@ -58,6 +58,16 @@ const upgrades = [
   { key: "security", label: "Fleet Security", baseCost: 520, effect: 0.08 }
 ];
 
+const ledgerBuckets = ["mined", "refinedIn", "refinedOut", "sold", "bought", "events", "sectorActions"];
+
+function createResourceLedger() {
+  return Object.fromEntries(resources.map((resource) => [
+    resource.key,
+    Object.fromEntries(ledgerBuckets.map((bucket) => [bucket, 0]))
+  ]));
+}
+
+const cloneLedger = (ledger) => JSON.parse(JSON.stringify(ledger || createResourceLedger()));
 const policyBranches = [
   {
     key: "mining",
@@ -201,6 +211,8 @@ function createInitialState() {
     ],
     log: ["Syndicate charter approved. Begin expansion into orbital belts."],
     ticks: 0,
+    resourceLedger: createResourceLedger(),
+    lastTickLedger: createResourceLedger()
     emergencyLoan: {
       cooldownUntilTick: 0,
       interestRate: LOAN_BASE_INTEREST,
@@ -231,6 +243,7 @@ const el = {
   rivalIntel: document.getElementById("rivalIntel"),
   leaderboard: document.getElementById("leaderboard"),
   eventLog: document.getElementById("eventLog"),
+  resourceLedgerPanel: document.getElementById("resourceLedgerPanel"),
   selectedSectorInfo: document.getElementById("selectedSectorInfo"),
   fortifySectorBtn: document.getElementById("fortifySectorBtn"),
   scanSectorBtn: document.getElementById("scanSectorBtn"),
@@ -555,6 +568,34 @@ function logEvent(text) {
   state.log = state.log.slice(0, 50);
 }
 
+function recordLedger(resourceKey, bucket, amount) {
+  if (!state.resourceLedger[resourceKey] || !ledgerBuckets.includes(bucket) || !Number.isFinite(amount) || amount <= 0) return;
+  state.resourceLedger[resourceKey][bucket] += amount;
+}
+
+function formatTickBreakdown(resourceKey, ledgerEntry) {
+  const chunks = [];
+  if (ledgerEntry.mined >= 1) chunks.push(`+${formatNumber(ledgerEntry.mined)} mined`);
+  if (ledgerEntry.refinedOut >= 1) chunks.push(`+${formatNumber(ledgerEntry.refinedOut)} refined`);
+  if (ledgerEntry.bought >= 1) chunks.push(`+${formatNumber(ledgerEntry.bought)} bought`);
+  if (ledgerEntry.events >= 1) chunks.push(`+${formatNumber(ledgerEntry.events)} events`);
+  if (ledgerEntry.sectorActions >= 1) chunks.push(`+${formatNumber(ledgerEntry.sectorActions)} sector`);
+  if (ledgerEntry.sold >= 1) chunks.push(`-${formatNumber(ledgerEntry.sold)} sold`);
+  if (ledgerEntry.refinedIn >= 1) chunks.push(`-${formatNumber(ledgerEntry.refinedIn)} refined in`);
+  if (!chunks.length) return `${resources.find((r) => r.key === resourceKey).label}: no major movement`;
+  return `${resources.find((r) => r.key === resourceKey).label} ${chunks.join(", ")}`;
+}
+
+function maybeLogMajorSwings() {
+  resources.forEach((resource) => {
+    const entry = state.resourceLedger[resource.key];
+    const positive = entry.mined + entry.refinedOut + entry.bought + entry.events + entry.sectorActions;
+    const negative = entry.sold + entry.refinedIn;
+    if (positive < 20 && negative < 20) return;
+    logEvent(formatTickBreakdown(resource.key, entry));
+  });
+}
+
 function spawnContracts() {
   state.contracts = Array.from({ length: 3 }, (_, i) => {
     const ore = resources[Math.floor(Math.random() * 4)];
@@ -707,6 +748,7 @@ function simulateTick() {
   const previousSnapshot = { ...(state.previousInventorySnapshot || {}) };
 
   state.ticks += 1;
+  state.resourceLedger = createResourceLedger();
   resetTickFlow();
   const mineCount = countBuildings("mine");
   const logisticsCount = countBuildings("logistics");
@@ -730,6 +772,9 @@ function simulateTick() {
     const base = state.extractionRate * fleetsHere * drillBoost * (0.6 + state.territories[belt.key] / 100) * riskPenalty * contestedPenalty;
 
     Object.entries(belt.richness).forEach(([res, richness]) => {
+      const minedAmount = base * richness;
+      state.inventory[res] += minedAmount;
+      recordLedger(res, "mined", minedAmount);
       const mined = base * richness * (res === "ice" ? iceYieldMult : 1);
       state.inventory[res] += mined;
       state.ledger.mined[res] += mined;
@@ -750,6 +795,11 @@ function simulateTick() {
     const refined = Math.min(state.inventory.iron, state.inventory.cobalt, refineryCount * 0.8);
     state.inventory.iron -= refined;
     state.inventory.cobalt -= refined;
+    const refinedOut = refined * 1.2;
+    state.inventory.alloy += refinedOut;
+    recordLedger("iron", "refinedIn", refined);
+    recordLedger("cobalt", "refinedIn", refined);
+    recordLedger("alloy", "refinedOut", refinedOut);
     state.inventory.alloy += refined * 1.2;
     state.ledger.waste += refined * 0.08;
     const refineLimit = Math.max(0, throughputLimits().refine - state.tickFlow.refine);
@@ -849,6 +899,9 @@ function simulateTick() {
     spawnContracts();
     logEvent("New federation contracts have been posted.");
   }
+
+  maybeLogMajorSwings();
+  state.lastTickLedger = cloneLedger(state.resourceLedger);
 
   updateCampaign();
   updateResourceDeltas(previousSnapshot);
@@ -1282,11 +1335,41 @@ function render() {
   }
 
   el.eventLog.innerHTML = state.log.map((item) => `<p>${item}</p>`).join("");
+
+  el.resourceLedgerPanel.innerHTML = resources.map((resource) => {
+    const entry = state.lastTickLedger[resource.key] || createResourceLedger()[resource.key];
+    const gained = entry.mined + entry.refinedOut + entry.bought + entry.events + entry.sectorActions;
+    const spent = entry.refinedIn + entry.sold;
+    const net = gained - spent;
+    const netLabel = `${net >= 0 ? "+" : ""}${formatNumber(net)}`;
+    const summary = `${resource.label}: ${netLabel} net`;
+    return `
+      <details class="ledger-resource">
+        <summary><strong>${summary}</strong><small>Last tick</small></summary>
+        <div class="ledger-details">
+          <span>⛏ Mined: ${formatNumber(entry.mined)}</span>
+          <span>🏭 Refined In: ${formatNumber(entry.refinedIn)}</span>
+          <span>🧱 Refined Out: ${formatNumber(entry.refinedOut)}</span>
+          <span>💱 Sold: ${formatNumber(entry.sold)}</span>
+          <span>🛒 Bought: ${formatNumber(entry.bought)}</span>
+          <span>✨ Events: ${formatNumber(entry.events)}</span>
+          <span>🛰 Sector Actions: ${formatNumber(entry.sectorActions)}</span>
+        </div>
+      </details>
+    `;
+  }).join("");
 }
 
 el.refineBtn.onclick = () => runAction(() => {
   const key = el.refineSelect.value;
   const amount = Math.max(1, Math.floor(Number(el.tradeAmount.value) || 1));
+  if (state.inventory[key] < amount) return;
+  state.inventory[key] -= amount;
+  const refinedOut = Math.round(amount * 0.8 + countBuildings("refinery") * 0.2);
+  state.inventory.alloy += refinedOut;
+  recordLedger(key, "refinedIn", amount);
+  recordLedger("alloy", "refinedOut", refinedOut);
+  logEvent(`Refinery converted ${amount} ${key} into Star Alloy.`);
   const refineRoom = Math.max(0, throughputLimits().refine - state.tickFlow.refine);
   const maxByStorage = Math.floor(availableStorageFor("alloy") / 0.8);
   const allowed = Math.min(amount, state.inventory[key], refineRoom, maxByStorage);
@@ -1329,6 +1412,7 @@ el.sellBtn.onclick = () => runAction(() => {
   state.inventory[key] -= amount;
   state.credits += payout;
   state.reputation += 0.08;
+  recordLedger(key, "sold", amount);
   state.ledger.revenue += payout;
   state.ledger.sold[key] += amount;
   logEvent(`Sold ${amount} ${key} for ${formatNumber(payout)} credits.`);
@@ -1360,6 +1444,7 @@ el.scanSectorBtn.onclick = () => runAction(() => {
   state.credits -= cost;
   const resource = resources[Math.floor(Math.random() * 4)];
   state.inventory[resource.key] += 22;
+  recordLedger(resource.key, "events", 22);
   state.territories[state.selectedSector] = Math.min(95, state.territories[state.selectedSector] + 4);
   logEvent(`Deep scan in ${state.selectedSector.toUpperCase()} found bonus ${resource.label}.`);
 });

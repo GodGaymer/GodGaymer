@@ -180,6 +180,12 @@ select,input {
 .map-node { cursor: pointer; }
 .map-node.active { stroke: #94ffca; stroke-width: 2.6; }
 
+
+.resource-ledger { margin-top: .7rem; display: grid; gap: .45rem; }
+.ledger-resource { border: 1px solid var(--border); border-radius: 10px; background: rgba(255,255,255,.03); padding: .45rem .55rem; }
+.ledger-resource summary { display: flex; justify-content: space-between; align-items: center; cursor: pointer; color: var(--text); }
+.ledger-resource summary small { color: var(--muted); }
+.ledger-details { margin-top: .5rem; display: grid; grid-template-columns: repeat(2, minmax(120px,1fr)); gap: .35rem .5rem; color: var(--muted); font-size: .85rem; }
 .resource-panel { margin-top: .75rem; display: grid; gap: .5rem; }
 .resource-row {
   display: flex;
