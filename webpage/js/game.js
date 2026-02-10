@@ -1,14 +1,40 @@
-const STORAGE_KEY = "orbital-syndicate-save-v4";
+const STORAGE_KEY = "orbital-syndicate-save-v5";
 const TICK_MS = 3000;
 const GRID_SIZE = 8;
 
 const resources = [
-  { key: "iron", label: "Iron Ore", basePrice: 8, volatility: 0.08 },
-  { key: "ice", label: "Cryo Ice", basePrice: 11, volatility: 0.09 },
-  { key: "cobalt", label: "Cobalt", basePrice: 17, volatility: 0.11 },
-  { key: "helium3", label: "Helium-3", basePrice: 29, volatility: 0.14 },
-  { key: "alloy", label: "Star Alloy", basePrice: 38, volatility: 0.1 }
+  { key: "iron", label: "Iron Ore", basePrice: 8, volatility: 0.08, tier: 1, margin: 0.05, demandLiquidity: 140 },
+  { key: "ice", label: "Cryo Ice", basePrice: 11, volatility: 0.09, tier: 1, margin: 0.055, demandLiquidity: 120 },
+  { key: "cobalt", label: "Cobalt", basePrice: 17, volatility: 0.11, tier: 2, margin: 0.07, demandLiquidity: 95 },
+  { key: "helium3", label: "Helium-3", basePrice: 29, volatility: 0.14, tier: 2, margin: 0.085, demandLiquidity: 70 },
+  { key: "alloy", label: "Star Alloy", basePrice: 38, volatility: 0.1, tier: 3, margin: 0.12, demandLiquidity: 42 }
 ];
+
+const recipes = {
+  components: {
+    key: "components",
+    label: "Component Casting",
+    inputs: { iron: 2, ice: 1 },
+    outputs: { cobalt: 1 },
+    tickTime: 1
+  },
+  fuelCells: {
+    key: "fuelCells",
+    label: "Fuel Cell Synthesis",
+    inputs: { ice: 2, cobalt: 1 },
+    outputs: { helium3: 1 },
+    tickTime: 2
+  },
+  starAlloy: {
+    key: "starAlloy",
+    label: "Star Alloy Forge",
+    inputs: { iron: 2, cobalt: 2, helium3: 1 },
+    outputs: { alloy: 2 },
+    tickTime: 3
+  }
+};
+
+const recipeList = Object.values(recipes);
 
 const buildingTypes = {
   empty: { label: "Empty", icon: "·", cost: 0, prod: 0 },
@@ -55,6 +81,9 @@ function createInitialState() {
     previousInventorySnapshot: Object.fromEntries(resources.map((r) => [r.key, 30])),
     resourceDeltas: Object.fromEntries(resources.map((r) => [r.key, { current: 30, lastTick: 30, delta: 0 }])),
     markets: Object.fromEntries(resources.map((r) => [r.key, r.basePrice])),
+    refineryQueue: [],
+    selectedRecipe: "components",
+    ledger: { refinedIn: {}, refinedOut: {}, crafted: {} },
     territories: Object.fromEntries(belts.map((b) => [b.key, 25])),
     upgrades: Object.fromEntries(upgrades.map((u) => [u.key, 0])),
     contracts: [],
@@ -93,6 +122,7 @@ const el = {
   scanSectorBtn: document.getElementById("scanSectorBtn"),
   extractSectorBtn: document.getElementById("extractSectorBtn"),
   refineBtn: document.getElementById("refineBtn"),
+  refineryQueueInfo: document.getElementById("refineryQueueInfo"),
   sellBtn: document.getElementById("sellBtn"),
   buyBtn: document.getElementById("buyBtn"),
   resetBtn: document.getElementById("resetBtn"),
@@ -131,6 +161,14 @@ function loadState() {
       const lastTick = merged.previousInventorySnapshot[r.key] ?? current;
       return [r.key, { current, lastTick, delta: current - lastTick }];
     }));
+    merged.refineryQueue = Array.isArray(parsed.refineryQueue) ? parsed.refineryQueue : [];
+    merged.selectedRecipe = parsed.selectedRecipe && recipes[parsed.selectedRecipe] ? parsed.selectedRecipe : "components";
+    const defaultLedger = { refinedIn: {}, refinedOut: {}, crafted: {} };
+    merged.ledger = {
+      refinedIn: { ...defaultLedger.refinedIn, ...((parsed.ledger || {}).refinedIn || {}) },
+      refinedOut: { ...defaultLedger.refinedOut, ...((parsed.ledger || {}).refinedOut || {}) },
+      crafted: { ...defaultLedger.crafted, ...((parsed.ledger || {}).crafted || {}) }
+    };
 
     return merged;
   } catch {
@@ -138,10 +176,76 @@ function loadState() {
   }
 }
 
+
 const saveState = () => localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 const formatNumber = (num) => Intl.NumberFormat().format(Math.round(num));
 const priceFor = (key) => state.markets[key] || 0;
 const avgInfluence = () => belts.reduce((sum, b) => sum + state.territories[b.key], 0) / belts.length;
+
+function ledgerAdd(bucket, key, amount) {
+  if (!state.ledger[bucket]) state.ledger[bucket] = {};
+  state.ledger[bucket][key] = (state.ledger[bucket][key] || 0) + amount;
+}
+
+function canRunRecipe(recipe, units = 1) {
+  return Object.entries(recipe.inputs).every(([key, needed]) => (state.inventory[key] || 0) >= needed * units);
+}
+
+function processRefineryQueue() {
+  const refineryCount = countBuildings("refinery");
+  if (!refineryCount || !state.refineryQueue.length) return;
+
+  let throughput = Math.max(1, refineryCount);
+  while (throughput > 0 && state.refineryQueue.length) {
+    const entry = state.refineryQueue[0];
+    const recipe = recipes[entry.recipeKey];
+    if (!recipe) {
+      state.refineryQueue.shift();
+      continue;
+    }
+
+    entry.progress += 1;
+    if (entry.progress < recipe.tickTime) {
+      throughput -= 1;
+      continue;
+    }
+
+    if (!canRunRecipe(recipe, 1)) {
+      logEvent(`Refinery stalled: ${recipe.label} lacks inputs.`);
+      break;
+    }
+
+    Object.entries(recipe.inputs).forEach(([key, amount]) => {
+      state.inventory[key] -= amount;
+      ledgerAdd("refinedIn", key, amount);
+    });
+
+    Object.entries(recipe.outputs).forEach(([key, amount]) => {
+      state.inventory[key] += amount;
+      ledgerAdd("refinedOut", key, amount);
+      ledgerAdd("crafted", key, amount);
+    });
+
+    entry.quantity -= 1;
+    entry.progress = 0;
+    throughput -= 1;
+
+    if (entry.quantity <= 0) {
+      state.refineryQueue.shift();
+    }
+  }
+}
+
+function marketTradeSnapshot(key, amount) {
+  const resource = resources.find((r) => r.key === key);
+  const base = priceFor(key);
+  const margin = resource?.margin || 0.05;
+  const liquidity = resource?.demandLiquidity || 100;
+  const pressure = Math.min(0.45, amount / liquidity);
+  const sellPrice = base * (1 + margin) * (1 - pressure * 0.5);
+  const buyPrice = base * (1 + margin * 1.75) * (1 + pressure);
+  return { sellPrice, buyPrice, pressure };
+}
 
 function updateResourceDeltas(previousSnapshot = state.previousInventorySnapshot || {}) {
   const snapshot = {};
@@ -202,7 +306,6 @@ function simulateTick() {
 
   state.ticks += 1;
   const mineCount = countBuildings("mine");
-  const refineryCount = countBuildings("refinery");
   const logisticsCount = countBuildings("logistics");
   const defenseCount = countBuildings("defense");
   const habitatCount = countBuildings("habitat");
@@ -223,12 +326,7 @@ function simulateTick() {
     state.territories[belt.key] = Math.max(8, Math.min(95, state.territories[belt.key] + (Math.random() * 3 - 1.5) + defenseCount * 0.05));
   });
 
-  if (refineryCount > 0) {
-    const refined = Math.min(state.inventory.iron, state.inventory.cobalt, refineryCount * 0.8);
-    state.inventory.iron -= refined;
-    state.inventory.cobalt -= refined;
-    state.inventory.alloy += refined * 1.2;
-  }
+  processRefineryQueue();
 
   resources.forEach((res) => {
     const rivalPressure = state.rivals.reduce((sum, r) => sum + r.strength, 0) / state.rivals.length;
@@ -432,9 +530,22 @@ function render() {
     el.beltList.appendChild(row);
   });
 
-  const nonAlloyResources = resources.filter((r) => r.key !== "alloy");
-  el.refineSelect.innerHTML = nonAlloyResources.map((r) => `<option value="${r.key}">${r.label}</option>`).join("");
-  el.marketSelect.innerHTML = resources.map((r) => `<option value="${r.key}">${r.label} · ${priceFor(r.key).toFixed(1)} cr · Inv ${formatNumber(state.inventory[r.key])}</option>`).join("");
+  el.refineSelect.innerHTML = recipeList.map((recipe) => `<option value="${recipe.key}" ${recipe.key === state.selectedRecipe ? "selected" : ""}>${recipe.label} · ${recipe.tickTime}t</option>`).join("");
+  const queueSummary = state.refineryQueue.slice(0, 3).map((entry) => {
+    const recipe = recipes[entry.recipeKey];
+    return `${recipe ? recipe.label : entry.recipeKey} x${entry.quantity} (${entry.progress || 0}/${recipe?.tickTime || 0})`;
+  }).join(" | ");
+  el.refineBtn.textContent = state.refineryQueue.length
+    ? `Queue Recipe (${state.refineryQueue.length} jobs)`
+    : "Queue Recipe";
+  el.refineryQueueInfo.textContent = state.refineryQueue.length
+    ? `Refinery queue: ${queueSummary}`
+    : "Refinery queue is idle.";
+
+  el.marketSelect.innerHTML = resources.map((r) => {
+    const { sellPrice } = marketTradeSnapshot(r.key, Math.max(1, Math.floor(Number(el.tradeAmount.value) || 1)));
+    return `<option value="${r.key}">${r.label} · ${sellPrice.toFixed(1)} cr sell · Inv ${formatNumber(state.inventory[r.key])}</option>`;
+  }).join("");
 
   el.upgradeList.innerHTML = "";
   upgrades.forEach((upg) => {
@@ -488,33 +599,46 @@ function render() {
 }
 
 el.refineBtn.onclick = () => runAction(() => {
-  const key = el.refineSelect.value;
-  const amount = Math.max(1, Math.floor(Number(el.tradeAmount.value) || 1));
-  if (state.inventory[key] < amount) return;
-  state.inventory[key] -= amount;
-  state.inventory.alloy += Math.round(amount * 0.8 + countBuildings("refinery") * 0.2);
-  logEvent(`Refinery converted ${amount} ${key} into Star Alloy.`);
+  const recipeKey = el.refineSelect.value;
+  const recipe = recipes[recipeKey];
+  if (!recipe) return;
+
+  const quantity = Math.max(1, Math.floor(Number(el.tradeAmount.value) || 1));
+  const inputCheck = Object.entries(recipe.inputs).every(([key, amount]) => (state.inventory[key] || 0) >= amount);
+  if (!inputCheck) return;
+
+  state.selectedRecipe = recipeKey;
+  state.refineryQueue.push({
+    recipeKey,
+    quantity,
+    progress: 0
+  });
+
+  logEvent(`Queued ${quantity}x ${recipe.label} in refinery lanes.`);
 });
 
 el.sellBtn.onclick = () => runAction(() => {
   const key = el.marketSelect.value;
   const amount = Math.max(1, Math.floor(Number(el.tradeAmount.value) || 1));
   if (state.inventory[key] < amount) return;
-  const payout = amount * priceFor(key);
+
+  const { sellPrice, pressure } = marketTradeSnapshot(key, amount);
+  const payout = amount * sellPrice;
   state.inventory[key] -= amount;
   state.credits += payout;
-  state.reputation += 0.08;
-  logEvent(`Sold ${amount} ${key} for ${formatNumber(payout)} credits.`);
+  state.reputation += 0.08 + pressure * 0.05;
+  logEvent(`Sold ${amount} ${key} for ${formatNumber(payout)} credits at ${(sellPrice).toFixed(1)} cr.`);
 });
 
 el.buyBtn.onclick = () => runAction(() => {
   const key = el.marketSelect.value;
   const amount = Math.max(1, Math.floor(Number(el.tradeAmount.value) || 1));
-  const cost = amount * priceFor(key);
+  const { buyPrice } = marketTradeSnapshot(key, amount);
+  const cost = amount * buyPrice;
   if (state.credits < cost) return;
   state.credits -= cost;
   state.inventory[key] += amount;
-  logEvent(`Purchased ${amount} ${key} for ${formatNumber(cost)} credits.`);
+  logEvent(`Purchased ${amount} ${key} for ${formatNumber(cost)} credits at ${(buyPrice).toFixed(1)} cr.`);
 });
 
 el.fortifySectorBtn.onclick = () => runAction(() => {
