@@ -32,6 +32,19 @@ const upgrades = [
   { key: "security", label: "Fleet Security", baseCost: 520, effect: 0.08 }
 ];
 
+const policyBranches = [
+  { key: "industrial", label: "Industrial Mandate", bonus: "+18% extract throughput", effect: () => ({ extract: 1.18, threat: 1.06 }) },
+  { key: "diplomatic", label: "Diplomatic Channels", bonus: "-16% campaign threat growth", effect: () => ({ threat: 0.84, marketBuy: 0.94 }) },
+  { key: "militarized", label: "Militarized Convoys", bonus: "+10% influence control actions", effect: () => ({ territory: 1.1, security: 1.08 }) }
+];
+
+const mutatorPool = [
+  { key: "rich-veins", label: "Rich Veins", detail: "+15% extraction, +8% threat growth", extract: 1.15, threat: 1.08 },
+  { key: "tight-storage", label: "Tight Storage", detail: "-20% storage capacity, +10% market prices", storage: 0.8, price: 1.1 },
+  { key: "freight-subsidy", label: "Freight Subsidy", detail: "+20% buy throughput", buy: 1.2 },
+  { key: "unstable-lanes", label: "Unstable Lanes", detail: "+12% belt risk, +10% contract payout", risk: 1.12, contractPayout: 1.1 }
+];
+
 const createGrid = () => Array.from({ length: GRID_SIZE * GRID_SIZE }, (_, i) => ({ type: i < 4 ? "habitat" : "empty", boost: 1 + Math.random() * 0.5 }));
 
 const newObjectives = () => ([
@@ -84,6 +97,9 @@ function createInitialState() {
       status: "active",
       objectives: newObjectives()
     },
+    activePolicy: null,
+    mutators: mutatorPool.slice(0, 2).map((m) => m.key),
+    refineryQueue: [],
     rivals: [
       { name: "Nova Drillers", strength: 1.05, credits: 2400, rep: 16 },
       { name: "Eclipse Cartel", strength: 1.22, credits: 3200, rep: 21 },
@@ -115,6 +131,17 @@ const el = {
   refineBtn: document.getElementById("refineBtn"),
   sellBtn: document.getElementById("sellBtn"),
   buyBtn: document.getElementById("buyBtn"),
+  emergencyLoanBtn: document.getElementById("emergencyLoanBtn"),
+  rerollMutatorsBtn: document.getElementById("rerollMutatorsBtn"),
+  policyPanel: document.getElementById("policyPanel"),
+  mutatorPanel: document.getElementById("mutatorPanel"),
+  resourceLedgerPanel: document.getElementById("resourceLedgerPanel"),
+  rivalIntel: document.getElementById("rivalIntel"),
+  scorecardPanel: document.getElementById("scorecardPanel"),
+  refineryQueueInfo: document.getElementById("refineryQueueInfo"),
+  sabotageIntelBtn: document.getElementById("sabotageIntelBtn"),
+  diplomaticPactBtn: document.getElementById("diplomaticPactBtn"),
+  defensiveInvestmentBtn: document.getElementById("defensiveInvestmentBtn"),
   resetBtn: document.getElementById("resetBtn"),
   tickBoostBtn: document.getElementById("tickBoostBtn"),
   mapLabels: Object.fromEntries(belts.map((belt) => [belt.key, document.getElementById(`map-label-${belt.key}`)])),
@@ -191,14 +218,27 @@ const saveState = () => localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
 const formatNumber = (num) => Intl.NumberFormat().format(Math.round(num));
 const priceFor = (key) => state.markets[key] || 0;
 const avgInfluence = () => belts.reduce((sum, b) => sum + state.territories[b.key], 0) / belts.length;
+const activeMutators = () => state.mutators.map((key) => mutatorPool.find((m) => m.key === key)).filter(Boolean);
+const activePolicy = () => policyBranches.find((policy) => policy.key === state.activePolicy);
+
+function mutatorValue(key, fallback = 1) {
+  return activeMutators().reduce((value, mutator) => value * (mutator[key] || 1), fallback);
+}
+
+function policyValue(key, fallback = 1) {
+  const policy = activePolicy();
+  if (!policy) return fallback;
+  const values = policy.effect();
+  return (values[key] || 1) * fallback;
+}
 
 const inventoryTotal = () => resources.reduce((sum, r) => sum + (state.inventory[r.key] || 0), 0);
 const storageCapacity = () => {
   const logisticsCount = countBuildings("logistics");
   const logisticsBoost = 1 + state.upgrades.logistics * upgrades[1].effect + logisticsCount * 0.012;
   return {
-    shared: state.storage.sharedCapacity * logisticsBoost,
-    perResource: Object.fromEntries(resources.map((r) => [r.key, (state.storage.perResource[r.key] || 0) * logisticsBoost]))
+    shared: state.storage.sharedCapacity * logisticsBoost * mutatorValue("storage"),
+    perResource: Object.fromEntries(resources.map((r) => [r.key, (state.storage.perResource[r.key] || 0) * logisticsBoost * mutatorValue("storage")]))
   };
 };
 
@@ -214,9 +254,9 @@ function throughputLimits() {
   const refineryCount = countBuildings("refinery");
   const logisticsBoost = 1 + state.upgrades.logistics * upgrades[1].effect + logisticsCount * 0.012;
   return {
-    extract: state.throughput.extractPerTick * logisticsBoost,
+    extract: state.throughput.extractPerTick * logisticsBoost * policyValue("extract") * mutatorValue("extract"),
     refine: state.throughput.refinePerTick * (1 + refineryCount * 0.03),
-    buy: state.throughput.buyPerTick * logisticsBoost
+    buy: state.throughput.buyPerTick * logisticsBoost * mutatorValue("buy")
   };
 }
 
@@ -294,7 +334,7 @@ function spawnContracts() {
   state.contracts = Array.from({ length: 3 }, (_, i) => {
     const ore = resources[Math.floor(Math.random() * 4)];
     const amount = 40 + i * 28 + Math.floor(Math.random() * 20);
-    return { id: `${Date.now()}-${i}`, resource: ore.key, amount, payout: amount * (priceFor(ore.key) + 3), rep: 2 + i };
+    return { id: `${Date.now()}-${i}`, resource: ore.key, amount, payout: amount * (priceFor(ore.key) + 3) * mutatorValue("contractPayout"), rep: 2 + i };
   });
 }
 
@@ -308,7 +348,7 @@ function objectiveProgress(objective) {
 
 function updateCampaign() {
   const defenseCount = countBuildings("defense");
-  const pressure = Math.max(0, 1.6 - defenseCount * 0.12 - state.upgrades.security * 0.18);
+  const pressure = Math.max(0, (1.6 - defenseCount * 0.12 - state.upgrades.security * 0.18) * policyValue("threat") * mutatorValue("threat"));
   state.campaign.threat = Math.max(0, Math.min(100, state.campaign.threat + pressure));
 
   const finished = state.campaign.objectives.every((objective) => objectiveProgress(objective) >= objective.target);
@@ -345,7 +385,7 @@ function simulateTick() {
 
   belts.forEach((belt) => {
     const fleetsHere = Math.max(1, Math.floor((state.fleetSize + habitatCount * 0.2) / belts.length) + 1);
-    const riskPenalty = 1 - belt.risk / securityBoost;
+    const riskPenalty = 1 - (belt.risk * mutatorValue("risk")) / (securityBoost * policyValue("security"));
     const base = state.extractionRate * fleetsHere * drillBoost * (0.6 + state.territories[belt.key] / 100) * riskPenalty;
 
     Object.entries(belt.richness).forEach(([res, richness]) => {
@@ -539,6 +579,57 @@ function renderBuildActions() {
   });
 }
 
+function renderPolicyPanel() {
+  el.policyPanel.innerHTML = "";
+  policyBranches.forEach((policy) => {
+    const row = document.createElement("div");
+    row.className = "row";
+    const active = state.activePolicy === policy.key;
+    row.innerHTML = `<div><strong>${policy.label}</strong><small>${policy.bonus}</small></div><button class="btn ghost">${active ? "Active" : state.activePolicy ? "Locked" : "Adopt"}</button>`;
+    const button = row.querySelector("button");
+    button.disabled = Boolean(state.activePolicy);
+    button.onclick = () => runAction(() => {
+      if (state.activePolicy) return;
+      state.activePolicy = policy.key;
+      logEvent(`${policy.label} doctrine adopted.`);
+    });
+    el.policyPanel.appendChild(row);
+  });
+}
+
+function renderMutatorPanel() {
+  el.mutatorPanel.innerHTML = activeMutators().map((mutator) => (`
+    <div class="objective"><strong>${mutator.label}</strong><small>${mutator.detail}</small></div>
+  `)).join("");
+}
+
+function renderResourceLedger() {
+  el.resourceLedgerPanel.innerHTML = resources.map((resource) => {
+    const overflow = state.tickFlow.overflow?.[resource.key] || 0;
+    const waste = state.ledger.waste?.[resource.key] || 0;
+    const delta = state.resourceDeltas?.[resource.key]?.delta || 0;
+    return `<div class="row"><div><strong>${resource.label}</strong><small>Δ ${delta.toFixed(1)} / tick</small></div><small>Overflow ${overflow.toFixed(1)} · Total Waste ${formatNumber(waste)}</small></div>`;
+  }).join("");
+}
+
+function renderRivalIntel() {
+  const leader = [...state.rivals].sort((a, b) => b.credits - a.credits)[0];
+  el.rivalIntel.innerHTML = state.rivals.map((rival) => {
+    const mood = rival === leader ? "Aggressive expansion" : "Consolidating";
+    return `<div class="row"><div><strong>${rival.name}</strong><small>${mood}</small></div><small>${formatNumber(rival.credits)} cr · Rep ${rival.rep.toFixed(1)}</small></div>`;
+  }).join("");
+}
+
+function renderScorecard() {
+  const totalWaste = resources.reduce((sum, resource) => sum + (state.ledger.waste?.[resource.key] || 0), 0);
+  const efficiency = Math.max(0, 100 - (totalWaste / Math.max(1, inventoryTotal() + totalWaste)) * 100);
+  el.scorecardPanel.innerHTML = `
+    <div class="objective"><strong>Completed Contracts</strong><small>${state.completedContracts}</small></div>
+    <div class="objective"><strong>Total Waste</strong><small>${formatNumber(totalWaste)} units</small></div>
+    <div class="objective"><strong>Ops Efficiency</strong><small>${efficiency.toFixed(1)}%</small></div>
+  `;
+}
+
 function render() {
   el.statsGrid.innerHTML = "";
   const netWorth = state.credits + resources.reduce((sum, r) => sum + state.inventory[r.key] * priceFor(r.key), 0);
@@ -574,9 +665,14 @@ function render() {
   });
 
   renderCampaign();
+  renderPolicyPanel();
+  renderMutatorPanel();
   renderResourcePanel();
+  renderResourceLedger();
   renderGrid();
   renderBuildActions();
+  renderRivalIntel();
+  renderScorecard();
   updateMapVisuals();
 
   el.beltList.innerHTML = "";
@@ -598,6 +694,9 @@ function render() {
   const nonAlloyResources = resources.filter((r) => r.key !== "alloy");
   el.refineSelect.innerHTML = nonAlloyResources.map((r) => `<option value="${r.key}">${r.label}</option>`).join("");
   el.marketSelect.innerHTML = resources.map((r) => `<option value="${r.key}">${r.label} · ${priceFor(r.key).toFixed(1)} cr · Inv ${formatNumber(state.inventory[r.key])}</option>`).join("");
+  el.refineryQueueInfo.textContent = state.refineryQueue.length
+    ? `Queue: ${state.refineryQueue.map((item) => `${item.amount} ${item.key}`).join(" → ")}`
+    : "Queue is empty.";
 
   el.upgradeList.innerHTML = "";
   upgrades.forEach((upg) => {
@@ -653,6 +752,7 @@ function render() {
 el.refineBtn.onclick = () => runAction(() => {
   const key = el.refineSelect.value;
   const amount = Math.max(1, Math.floor(Number(el.tradeAmount.value) || 1));
+  state.refineryQueue.push({ key, amount });
   const refineRoom = Math.max(0, throughputLimits().refine - state.tickFlow.refine);
   const maxByStorage = Math.floor(availableStorageFor("alloy") / 0.8);
   const allowed = Math.min(amount, state.inventory[key], refineRoom, maxByStorage);
@@ -668,6 +768,7 @@ el.refineBtn.onclick = () => runAction(() => {
     state.tickFlow.overflow.alloy += overflow;
     logEvent(`Refine overflow: lost ${overflow.toFixed(1)} alloy.`);
   }
+  if (state.refineryQueue.length > 6) state.refineryQueue = state.refineryQueue.slice(-6);
   logEvent(`Refinery converted ${allowed} ${key} into Star Alloy.`);
 });
 
@@ -688,11 +789,13 @@ el.buyBtn.onclick = () => runAction(() => {
   const buyRoom = Math.max(0, throughputLimits().buy - state.tickFlow.buy);
   const allowed = Math.min(amount, buyRoom, availableStorageFor(key));
   const cost = allowed * priceFor(key);
-  if (allowed <= 0 || state.credits < cost) return;
-  state.credits -= cost;
+  const policyDiscount = policyValue("marketBuy");
+  const discountedCost = cost * policyDiscount;
+  if (allowed <= 0 || state.credits < discountedCost) return;
+  state.credits -= discountedCost;
   state.inventory[key] += allowed;
   state.tickFlow.buy += allowed;
-  logEvent(`Purchased ${allowed} ${key} for ${formatNumber(cost)} credits.`);
+  logEvent(`Purchased ${allowed} ${key} for ${formatNumber(discountedCost)} credits.`);
 });
 
 el.fortifySectorBtn.onclick = () => runAction(() => {
@@ -734,6 +837,53 @@ el.extractSectorBtn.onclick = () => runAction(() => {
   state.credits -= cost;
   state.campaign.threat = Math.min(100, state.campaign.threat + 5);
   logEvent(`Extraction surge at ${belt.label}: +${extracted.toFixed(1)} ore.`);
+});
+
+
+el.sabotageIntelBtn.onclick = () => runAction(() => {
+  const cost = 280;
+  if (state.credits < cost) return;
+  state.credits -= cost;
+  state.rivals.forEach((rival) => { rival.credits = Math.max(0, rival.credits - 120); });
+  state.campaign.threat = Math.max(0, state.campaign.threat - 6);
+  logEvent("Counter-intel sabotage disrupted rival funding routes.");
+});
+
+el.diplomaticPactBtn.onclick = () => runAction(() => {
+  const cost = 340;
+  if (state.credits < cost) return;
+  state.credits -= cost;
+  state.reputation += 3;
+  belts.forEach((belt) => {
+    state.territories[belt.key] = Math.min(95, state.territories[belt.key] + 3 * policyValue("territory"));
+  });
+  logEvent("Diplomatic pact signed. Border influence stabilized.");
+});
+
+el.defensiveInvestmentBtn.onclick = () => runAction(() => {
+  const cost = 360;
+  if (state.credits < cost) return;
+  state.credits -= cost;
+  state.campaign.threat = Math.max(0, state.campaign.threat - 12);
+  state.upgrades.security += 0.2;
+  logEvent("Defensive stations reinforced across trade lanes.");
+});
+
+el.emergencyLoanBtn.onclick = () => runAction(() => {
+  state.credits += 650;
+  state.reputation = Math.max(0, state.reputation - 1.2);
+  state.campaign.threat = Math.min(100, state.campaign.threat + 4);
+  logEvent("Emergency loan accepted. Treasury restored at political cost.");
+});
+
+el.rerollMutatorsBtn.onclick = () => runAction(() => {
+  if (state.ticks > 0) {
+    logEvent("Mutators can only be rerolled before launch.");
+    return;
+  }
+  const shuffled = [...mutatorPool].sort(() => Math.random() - 0.5);
+  state.mutators = shuffled.slice(0, 2).map((m) => m.key);
+  logEvent("Scenario mutators rerolled.");
 });
 
 Object.entries(el.mapNodes).forEach(([key, node]) => {
