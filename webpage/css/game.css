@@ -196,3 +196,5 @@ select,input {
 .delta.negative { color: #ff6f7a; }
 .delta.neutral { color: #97a6bf; }
 .price { color: var(--accent); }
+
+.intel-row strong { color: var(--accent-2); }
