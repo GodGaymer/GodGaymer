@@ -17,6 +17,7 @@
       </div>
       <div class="topbar-actions">
         <button id="tickBoostBtn" class="btn ghost">+1 Tick</button>
+        <button id="emergencyLoanBtn" class="btn ghost">Emergency Loan</button>
         <button id="resetBtn" class="btn danger">Reset Run</button>
       </div>
     </header>
@@ -35,6 +36,19 @@
       <article class="card">
         <h2>Campaign Ops</h2>
         <div id="campaignPanel" class="campaign"></div>
+      </article>
+
+      <article class="card">
+        <h2>Doctrine Branches</h2>
+        <p class="subtle">Choose one policy path. Branches are mutually exclusive once adopted.</p>
+        <div id="policyPanel" class="list"></div>
+      </article>
+
+      <article class="card">
+        <h2>Scenario Mutators</h2>
+        <p class="subtle">Replay modifiers shape each run.</p>
+        <div class="inline"><button id="rerollMutatorsBtn" class="btn ghost">Reroll (Pre-Launch)</button></div>
+        <div id="mutatorPanel" class="campaign"></div>
       </article>
 
       <article class="card span-2">
@@ -86,6 +100,11 @@
             <button id="scanSectorBtn" class="btn ghost">Deep Scan (220 cr)</button>
             <button id="extractSectorBtn" class="btn">Extract Surge (260 cr)</button>
           </div>
+          <div class="inline wrap">
+            <button id="sabotageIntelBtn" class="btn ghost">Sabotage Intel (280 cr)</button>
+            <button id="diplomaticPactBtn" class="btn ghost">Diplomatic Pact (340 cr)</button>
+            <button id="defensiveInvestmentBtn" class="btn ghost">Defensive Investment (360 cr)</button>
+          </div>
         </div>
       </article>
 
@@ -118,8 +137,9 @@
         <h2>Factory & Trade</h2>
         <div class="inline wrap">
           <select id="refineSelect"></select>
-          <button id="refineBtn" class="btn">Refine → Alloy</button>
+          <button id="refineBtn" class="btn">Queue Recipe</button>
         </div>
+        <p id="refineryQueueInfo" class="subtle"></p>
         <hr />
         <div class="inline wrap">
           <select id="marketSelect"></select>
@@ -142,8 +162,20 @@
       </article>
 
       <article class="card">
+        <h2>Rival Intel</h2>
+        <p class="subtle">Watch intent feeds and react before rivals lock key sectors.</p>
+        <div id="rivalIntel" class="list"></div>
+      </article>
+
+      <article class="card">
         <h2>Leaderboard</h2>
         <div id="leaderboard" class="list"></div>
+      </article>
+
+      <article class="card">
+        <h2>Run Scorecard</h2>
+        <p class="subtle">Ledger-derived totals and efficiency KPIs.</p>
+        <div id="scorecardPanel" class="campaign"></div>
       </article>
 
       <article class="card span-2">
