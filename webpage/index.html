@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Orbital Syndicate — Space Mining Management Sim</title>
-  <meta name="description" content="A semi multiplayer space mining management simulation where your corporation competes against rival factions in a live market." />
+  <title>Orbital Syndicate — 2D Management Sim</title>
+  <meta name="description" content="Build your asteroid mining empire in a stylish 2D management simulator." />
   <link rel="stylesheet" href="css/game.css" />
 </head>
 <body>
@@ -51,78 +51,121 @@
         <div id="mutatorPanel" class="campaign"></div>
       </article>
 
-<body>
-  <div class="app-shell">
-    <header class="topbar card">
-      <div>
-        <p class="eyebrow">Semi Multiplayer Management Sim</p>
-        <h1>Orbital Syndicate</h1>
-      </div>
-      <div class="topbar-actions">
-        <button id="tickBoostBtn" class="btn ghost">Run 8h Simulation</button>
-        <button id="resetBtn" class="btn danger">Reset Save</button>
-      </div>
-    </header>
+      <article class="card span-2">
+        <h2>Animated Star Map</h2>
+        <p class="subtle">Live trade lanes and belt control in real-time.</p>
+        <div class="starmap-wrap">
+          <svg id="starMap" class="starmap" viewBox="0 0 680 280" role="img" aria-label="Orbital sector map">
+            <defs>
+              <linearGradient id="routeGlow" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="#56e3ff" stop-opacity="0.2" />
+                <stop offset="50%" stop-color="#56e3ff" stop-opacity="0.95" />
+                <stop offset="100%" stop-color="#56e3ff" stop-opacity="0.2" />
+              </linearGradient>
+            </defs>
+            <rect x="0" y="0" width="680" height="280" rx="14" class="space-bg"></rect>
+            <g class="routes">
+              <line id="route-ceres" class="route" x1="114" y1="190" x2="318" y2="140"></line>
+              <line id="route-vulcan" class="route" x1="318" y1="140" x2="500" y2="76"></line>
+              <line id="route-tycho" class="route" x1="318" y1="140" x2="532" y2="200"></line>
+              <line id="route-ashen" class="route" x1="500" y1="76" x2="532" y2="200"></line>
+            </g>
+            <g class="lanes">
+              <circle class="ship-dot d1" r="3.5" cx="114" cy="190"></circle>
+              <circle class="ship-dot d2" r="3.5" cx="318" cy="140"></circle>
+              <circle class="ship-dot d3" r="3.5" cx="500" cy="76"></circle>
+            </g>
+            <g>
+              <circle id="node-ceres" class="map-node" cx="114" cy="190" r="22"></circle>
+              <circle id="node-vulcan" class="map-node" cx="318" cy="140" r="22"></circle>
+              <circle id="node-tycho" class="map-node" cx="500" cy="76" r="22"></circle>
+              <circle id="node-ashen" class="map-node" cx="532" cy="200" r="22"></circle>
 
-    <main class="grid-layout">
-      <section class="card stats">
-        <h2>Corporation Status</h2>
-        <div class="stats-grid" id="statsGrid"></div>
-      </section>
+              <text x="84" y="224">Ceres Strip</text>
+              <text x="282" y="174">Vulcan</text>
+              <text x="468" y="110">Tycho Deep</text>
+              <text x="502" y="236">Ashen Halo</text>
 
-      <section class="card">
-        <h2>Asteroid Belts</h2>
-        <p class="subtle">Send mining fleets to contested sectors. Rival corporations mine in parallel, affecting prices and control.</p>
-        <div id="beltList" class="belt-list"></div>
-      </section>
-
-      <section class="card">
-        <h2>Operations</h2>
-        <div class="control-group">
-          <label for="refineSelect">Refine ore into alloys (2 ore → 1 alloy)</label>
-          <div class="inline">
-            <select id="refineSelect"></select>
-            <button id="refineBtn" class="btn">Refine 10 batches</button>
+              <text id="map-label-ceres" class="map-value" x="96" y="195">25%</text>
+              <text id="map-label-vulcan" class="map-value" x="300" y="145">25%</text>
+              <text id="map-label-tycho" class="map-value" x="482" y="81">25%</text>
+              <text id="map-label-ashen" class="map-value" x="514" y="205">25%</text>
+            </g>
+          </svg>
+        </div>
+        <div class="sector-cmd">
+          <div id="selectedSectorInfo" class="subtle">Select a sector node to issue strategic actions.</div>
+          <div class="inline wrap">
+            <button id="fortifySectorBtn" class="btn ghost">Fortify (300 cr)</button>
+            <button id="scanSectorBtn" class="btn ghost">Deep Scan (220 cr)</button>
+            <button id="extractSectorBtn" class="btn">Extract Surge (260 cr)</button>
+          </div>
+          <div class="inline wrap">
+            <button id="sabotageIntelBtn" class="btn ghost">Sabotage Intel (280 cr)</button>
+            <button id="diplomaticPactBtn" class="btn ghost">Diplomatic Pact (340 cr)</button>
+            <button id="defensiveInvestmentBtn" class="btn ghost">Defensive Investment (360 cr)</button>
           </div>
         </div>
       </article>
 
-        <div class="control-group">
-          <label for="marketSelect">Trade with the dynamic market</label>
-          <div class="inline wrap">
-            <select id="marketSelect"></select>
-            <input id="tradeAmount" type="number" min="1" value="10" />
-            <button id="sellBtn" class="btn">Sell</button>
-            <button id="buyBtn" class="btn ghost">Buy</button>
-          </div>
+      <article class="card span-2">
+        <h2>Sector Grid</h2>
+        <p class="subtle">Build a 2D colony with animated structures and output bonuses.</p>
+        <div id="sectorGrid" class="sector-grid" aria-label="2D colony grid"></div>
+        <div class="inline wrap legend">
+          <span><i class="swatch habitat"></i> Habitat</span>
+          <span><i class="swatch mine"></i> Mine</span>
+          <span><i class="swatch refinery"></i> Refinery</span>
+          <span><i class="swatch logistics"></i> Logistics</span>
+          <span><i class="swatch defense"></i> Defense</span>
+          <span><i class="swatch empty"></i> Empty</span>
         </div>
+      </article>
 
-        <div class="control-group">
-          <label>Fleet Upgrades</label>
-          <div id="upgradeList" class="upgrade-list"></div>
+      <article class="card">
+        <h2>Build Queue</h2>
+        <p class="subtle">Select a district, then place a structure.</p>
+        <div id="buildActions" class="build-actions"></div>
+      </article>
+
+      <article class="card">
+        <h2>Asteroid Belts</h2>
+        <div id="beltList" class="list"></div>
+      </article>
+
+      <article class="card">
+        <h2>Factory & Trade</h2>
+        <div class="inline wrap">
+          <select id="refineSelect"></select>
+          <button id="refineBtn" class="btn">Queue Recipe</button>
         </div>
-      </section>
+        <p id="refineryQueueInfo" class="subtle"></p>
+        <hr />
+        <div class="inline wrap">
+          <select id="marketSelect"></select>
+          <input id="tradeAmount" type="number" min="1" value="10" />
+        </div>
+        <div class="inline">
+          <button id="sellBtn" class="btn">Sell</button>
+          <button id="buyBtn" class="btn ghost">Buy</button>
+        </div>
+      </article>
 
-      <section class="card">
+      <article class="card">
+        <h2>Resource Tick Ledger</h2>
+        <p class="subtle">Breakdown of where each resource moved during the last tick.</p>
+        <div id="resourceLedgerPanel" class="resource-ledger"></div>
+      </article>
+
+      <article class="card">
+        <h2>Upgrades</h2>
+        <div id="upgradeList" class="list"></div>
+      </article>
+
+      <article class="card">
         <h2>Contracts</h2>
-        <p class="subtle">Complete contracts for reputation, credits, and strategic boosts.</p>
-        <div id="contracts" class="contracts"></div>
-      </section>
-
-      <section class="card">
-        <h2>Federation Leaderboard</h2>
-        <ol id="leaderboard" class="leaderboard"></ol>
-      </section>
-
-      <section class="card span-2">
-        <h2>Event Log</h2>
-        <ul id="eventLog" class="event-log"></ul>
-      </section>
-    </main>
-  </div>
-
-  <script src="js/game.js"></script>
-</body>
+        <div id="contracts" class="list"></div>
+      </article>
 
       <article class="card">
         <h2>Rival Intel</h2>
