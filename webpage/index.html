@@ -1,6 +1,5 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -8,6 +7,49 @@
   <meta name="description" content="A semi multiplayer space mining management simulation where your corporation competes against rival factions in a live market." />
   <link rel="stylesheet" href="css/game.css" />
 </head>
+<body>
+  <main class="app-shell">
+    <header class="topbar card">
+      <div>
+        <p class="eyebrow">2D Management Simulation</p>
+        <h1>Orbital Syndicate</h1>
+        <p class="subtle">Expand stations, animate your fleet, and dominate orbital sectors.</p>
+      </div>
+      <div class="topbar-actions">
+        <button id="tickBoostBtn" class="btn ghost">+1 Tick</button>
+        <button id="emergencyLoanBtn" class="btn ghost">Emergency Loan</button>
+        <button id="resetBtn" class="btn danger">Reset Run</button>
+      </div>
+    </header>
+
+    <section class="grid-layout">
+      <article class="card">
+        <h2>Command Overview</h2>
+        <div id="statsGrid" class="stats-grid"></div>
+      </article>
+
+      <article class="card">
+        <h2>Resource Pulse</h2>
+        <div id="resourcePanel" class="resource-panel"></div>
+      </article>
+
+      <article class="card">
+        <h2>Campaign Ops</h2>
+        <div id="campaignPanel" class="campaign"></div>
+      </article>
+
+      <article class="card">
+        <h2>Doctrine Branches</h2>
+        <p class="subtle">Choose one policy path. Branches are mutually exclusive once adopted.</p>
+        <div id="policyPanel" class="list"></div>
+      </article>
+
+      <article class="card">
+        <h2>Scenario Mutators</h2>
+        <p class="subtle">Replay modifiers shape each run.</p>
+        <div class="inline"><button id="rerollMutatorsBtn" class="btn ghost">Reroll (Pre-Launch)</button></div>
+        <div id="mutatorPanel" class="campaign"></div>
+      </article>
 
 <body>
   <div class="app-shell">
@@ -43,6 +85,7 @@
             <button id="refineBtn" class="btn">Refine 10 batches</button>
           </div>
         </div>
+      </article>
 
         <div class="control-group">
           <label for="marketSelect">Trade with the dynamic market</label>
@@ -81,4 +124,30 @@
   <script src="js/game.js"></script>
 </body>
 
+      <article class="card">
+        <h2>Rival Intel</h2>
+        <p class="subtle">Watch intent feeds and react before rivals lock key sectors.</p>
+        <div id="rivalIntel" class="list"></div>
+      </article>
+
+      <article class="card">
+        <h2>Leaderboard</h2>
+        <div id="leaderboard" class="list"></div>
+      </article>
+
+      <article class="card">
+        <h2>Run Scorecard</h2>
+        <p class="subtle">Ledger-derived totals and efficiency KPIs.</p>
+        <div id="scorecardPanel" class="campaign"></div>
+      </article>
+
+      <article class="card span-2">
+        <h2>Ops Log</h2>
+        <div id="eventLog" class="log"></div>
+      </article>
+    </section>
+  </main>
+
+  <script src="js/game.js"></script>
+</body>
 </html>
