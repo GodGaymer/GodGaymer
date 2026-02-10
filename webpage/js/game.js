@@ -1,4 +1,4 @@
-const STORAGE_KEY = "orbital-syndicate-save-v4";
+const STORAGE_KEY = "orbital-syndicate-save-v5";
 const TICK_MS = 3000;
 const GRID_SIZE = 8;
 
@@ -58,6 +58,10 @@ function createInitialState() {
     territories: Object.fromEntries(belts.map((b) => [b.key, 25])),
     upgrades: Object.fromEntries(upgrades.map((u) => [u.key, 0])),
     contracts: [],
+    rivalInfluence: Object.fromEntries(belts.map((b) => [b.key, 8])),
+    rivalIntents: [],
+    diplomacyPactTicks: 0,
+    defensiveInvestmentTicks: 0,
     campaign: {
       chapter: 1,
       threat: 14,
@@ -65,9 +69,9 @@ function createInitialState() {
       objectives: newObjectives()
     },
     rivals: [
-      { name: "Nova Drillers", strength: 1.05, credits: 2400, rep: 16 },
-      { name: "Eclipse Cartel", strength: 1.22, credits: 3200, rep: 21 },
-      { name: "Astra Forge", strength: 1.12, credits: 2800, rep: 19 }
+      { name: "Nova Drillers", strength: 1.05, credits: 2400, rep: 16, aggression: 0.9 },
+      { name: "Eclipse Cartel", strength: 1.22, credits: 3200, rep: 21, aggression: 1.1 },
+      { name: "Astra Forge", strength: 1.12, credits: 2800, rep: 19, aggression: 1.0 }
     ],
     log: ["Syndicate charter approved. Begin expansion into orbital belts."],
     ticks: 0
@@ -86,12 +90,16 @@ const el = {
   tradeAmount: document.getElementById("tradeAmount"),
   upgradeList: document.getElementById("upgradeList"),
   contracts: document.getElementById("contracts"),
+  rivalIntel: document.getElementById("rivalIntel"),
   leaderboard: document.getElementById("leaderboard"),
   eventLog: document.getElementById("eventLog"),
   selectedSectorInfo: document.getElementById("selectedSectorInfo"),
   fortifySectorBtn: document.getElementById("fortifySectorBtn"),
   scanSectorBtn: document.getElementById("scanSectorBtn"),
   extractSectorBtn: document.getElementById("extractSectorBtn"),
+  sabotageIntelBtn: document.getElementById("sabotageIntelBtn"),
+  diplomaticPactBtn: document.getElementById("diplomaticPactBtn"),
+  defensiveInvestmentBtn: document.getElementById("defensiveInvestmentBtn"),
   refineBtn: document.getElementById("refineBtn"),
   sellBtn: document.getElementById("sellBtn"),
   buyBtn: document.getElementById("buyBtn"),
@@ -118,7 +126,14 @@ function loadState() {
         ...(parsed.campaign || {})
       },
       selectedSector: parsed.selectedSector || "ceres",
-      completedContracts: parsed.completedContracts || 0
+      completedContracts: parsed.completedContracts || 0,
+      rivalInfluence: {
+        ...initial.rivalInfluence,
+        ...(parsed.rivalInfluence || {})
+      },
+      rivalIntents: parsed.rivalIntents || [],
+      diplomacyPactTicks: parsed.diplomacyPactTicks || 0,
+      defensiveInvestmentTicks: parsed.defensiveInvestmentTicks || 0
     };
 
     const fallbackSnapshot = Object.fromEntries(resources.map((r) => [r.key, merged.inventory[r.key] ?? 0]));
@@ -142,6 +157,7 @@ const saveState = () => localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
 const formatNumber = (num) => Intl.NumberFormat().format(Math.round(num));
 const priceFor = (key) => state.markets[key] || 0;
 const avgInfluence = () => belts.reduce((sum, b) => sum + state.territories[b.key], 0) / belts.length;
+const averageRivalPressure = () => belts.reduce((sum, belt) => sum + (state.rivalInfluence?.[belt.key] || 0), 0) / belts.length;
 
 function updateResourceDeltas(previousSnapshot = state.previousInventorySnapshot || {}) {
   const snapshot = {};
@@ -163,7 +179,15 @@ function spawnContracts() {
   state.contracts = Array.from({ length: 3 }, (_, i) => {
     const ore = resources[Math.floor(Math.random() * 4)];
     const amount = 40 + i * 28 + Math.floor(Math.random() * 20);
-    return { id: `${Date.now()}-${i}`, resource: ore.key, amount, payout: amount * (priceFor(ore.key) + 3), rep: 2 + i };
+    return {
+      id: `${Date.now()}-${i}`,
+      resource: ore.key,
+      amount,
+      payout: amount * (priceFor(ore.key) + 3),
+      rep: 2 + i,
+      expiresIn: 16 + i * 3 + Math.floor(Math.random() * 7),
+      contestedBy: null
+    };
   });
 }
 
@@ -211,16 +235,21 @@ function simulateTick() {
   const logisticsBoost = 1 + state.upgrades.logistics * upgrades[1].effect + logisticsCount * 0.012;
   const securityBoost = 1 + state.upgrades.security * upgrades[2].effect + defenseCount * 0.01;
 
+  runRivalTurn();
+
   belts.forEach((belt) => {
     const fleetsHere = Math.max(1, Math.floor((state.fleetSize + habitatCount * 0.2) / belts.length) + 1);
     const riskPenalty = 1 - belt.risk / securityBoost;
-    const base = state.extractionRate * fleetsHere * drillBoost * (0.6 + state.territories[belt.key] / 100) * riskPenalty;
+    const rivalShare = state.rivalInfluence[belt.key] || 0;
+    const contestedPenalty = Math.max(0.45, 1 - rivalShare / 135);
+    const base = state.extractionRate * fleetsHere * drillBoost * (0.6 + state.territories[belt.key] / 100) * riskPenalty * contestedPenalty;
 
     Object.entries(belt.richness).forEach(([res, richness]) => {
       state.inventory[res] += base * richness;
     });
 
-    state.territories[belt.key] = Math.max(8, Math.min(95, state.territories[belt.key] + (Math.random() * 3 - 1.5) + defenseCount * 0.05));
+    state.territories[belt.key] = Math.max(8, Math.min(95, state.territories[belt.key] + (Math.random() * 3 - 1.5) + defenseCount * 0.05 - rivalShare * 0.02));
+    state.rivalInfluence[belt.key] = Math.max(0, Math.min(95, state.rivalInfluence[belt.key] - (0.6 + defenseCount * 0.15 + state.upgrades.security * 0.4)));
   });
 
   if (refineryCount > 0) {
@@ -246,6 +275,9 @@ function simulateTick() {
   });
 
   if (state.ticks % 8 === 0) maybeTriggerSectorEvent();
+  updateContractTimers();
+  if (state.diplomacyPactTicks > 0) state.diplomacyPactTicks -= 1;
+  if (state.defensiveInvestmentTicks > 0) state.defensiveInvestmentTicks -= 1;
   if (state.ticks % 10 === 0 && Math.random() > 0.5) {
     spawnContracts();
     logEvent("New federation contracts have been posted.");
@@ -255,6 +287,76 @@ function simulateTick() {
   updateResourceDeltas(previousSnapshot);
   saveState();
   render();
+}
+
+function contractWinnerName(contract) {
+  if (contract.contestedBy === "player") return "Your Syndicate";
+  return contract.contestedBy || "A rival consortium";
+}
+
+function updateContractTimers() {
+  const expired = [];
+  state.contracts = state.contracts.filter((contract) => {
+    contract.expiresIn -= 1;
+    if (contract.expiresIn > 0) return true;
+    expired.push(contract);
+    return false;
+  });
+
+  expired.forEach((contract) => {
+    if (contract.contestedBy && contract.contestedBy !== "player") {
+      state.campaign.threat = Math.min(100, state.campaign.threat + 5);
+      logEvent(`Contract window closed: ${contractWinnerName(contract)} won the ${contract.resource.toUpperCase()} bid.`);
+      return;
+    }
+    logEvent(`Contract for ${contract.resource.toUpperCase()} expired before delivery.`);
+  });
+
+  if (!state.contracts.length) {
+    spawnContracts();
+    logEvent("Fresh contracts posted after prior bids resolved.");
+  }
+}
+
+function queueRivalIntent(rival, type, belt, detail = "") {
+  const intent = { rival: rival.name, type, belt: belt.key, label: `${rival.name} ${type} ${belt.label}${detail}` };
+  state.rivalIntents.unshift(intent);
+  state.rivalIntents = state.rivalIntents.slice(0, 6);
+}
+
+function runRivalTurn() {
+  const pactDampener = state.diplomacyPactTicks > 0 ? 0.72 : 1;
+  state.rivals.forEach((rival) => {
+    const targetBelt = belts[Math.floor(Math.random() * belts.length)];
+    const intentRoll = Math.random();
+
+    if (intentRoll < 0.34) {
+      const gain = (2.2 + Math.random() * 3.8) * rival.strength * pactDampener;
+      state.rivalInfluence[targetBelt.key] = Math.min(92, state.rivalInfluence[targetBelt.key] + gain);
+      queueRivalIntent(rival, "targeting", targetBelt, " to expand influence");
+    } else if (intentRoll < 0.58) {
+      const targetResource = resources[Math.floor(Math.random() * 4)];
+      const cut = 1 - (0.025 + Math.random() * 0.035) * rival.aggression * pactDampener;
+      state.markets[targetResource.key] = Math.max(3, state.markets[targetResource.key] * cut);
+      queueRivalIntent(rival, "undercutting", targetBelt, ` via ${targetResource.label} price war`);
+    } else if (intentRoll < 0.82) {
+      const openContracts = state.contracts.filter((contract) => !contract.contestedBy || contract.contestedBy === "player");
+      if (openContracts.length) {
+        const contract = openContracts[Math.floor(Math.random() * openContracts.length)];
+        contract.contestedBy = rival.name;
+        contract.expiresIn = Math.max(2, contract.expiresIn - (2 + Math.floor(Math.random() * 3)));
+        queueRivalIntent(rival, "bidding against you in", targetBelt, ` for ${contract.resource.toUpperCase()} contracts`);
+      }
+    } else {
+      const raidImpact = (2 + Math.random() * 4) * rival.strength * pactDampener;
+      const defenseMitigation = state.defensiveInvestmentTicks > 0 ? 0.55 : 1;
+      const totalImpact = raidImpact * defenseMitigation;
+      state.territories[targetBelt.key] = Math.max(6, state.territories[targetBelt.key] - totalImpact * 0.9);
+      state.rivalInfluence[targetBelt.key] = Math.min(95, state.rivalInfluence[targetBelt.key] + totalImpact * 0.65);
+      state.credits = Math.max(0, state.credits - totalImpact * 12);
+      queueRivalIntent(rival, "raiding", targetBelt, " after spotting weak defenses");
+    }
+  });
 }
 
 function maybeTriggerSectorEvent() {
@@ -312,7 +414,9 @@ function updateMapVisuals() {
 
   const selected = belts.find((belt) => belt.key === state.selectedSector);
   const influence = Math.round(state.territories[selected.key]);
-  el.selectedSectorInfo.textContent = `${selected.label} · Influence ${influence}% · Risk ${Math.round(selected.risk * 100)}%`;
+  const rival = Math.round(state.rivalInfluence[selected.key] || 0);
+  const efficiency = Math.max(45, Math.round((1 - rival / 135) * 100));
+  el.selectedSectorInfo.textContent = `${selected.label} · Influence ${influence}% · Rival ${rival}% · Extraction Eff ${efficiency}% · Risk ${Math.round(selected.risk * 100)}%`;
 }
 
 function renderResourcePanel() {
@@ -401,6 +505,7 @@ function render() {
     ["Fleet Size", formatNumber(state.fleetSize)],
     ["Avg Influence", `${avgInfluence().toFixed(1)}%`],
     ["Net Worth", `${formatNumber(netWorth)} cr`],
+    ["Rival Pressure", `${averageRivalPressure().toFixed(1)}%`],
     ["Ticks", formatNumber(state.ticks)]
   ];
   stats.forEach(([label, value]) => {
@@ -422,7 +527,9 @@ function render() {
     row.className = "row";
     const pct = Math.round(state.territories[belt.key]);
     const actionCost = 150 + (100 - pct) * 4;
-    row.innerHTML = `<div><strong>${belt.label}</strong><small>Influence ${pct}% · Risk ${Math.round(belt.risk * 100)}%</small></div><button class="btn ghost">Secure (${formatNumber(actionCost)} cr)</button>`;
+    const rival = Math.round(state.rivalInfluence[belt.key] || 0);
+    const efficiency = Math.max(45, Math.round((1 - rival / 135) * 100));
+    row.innerHTML = `<div><strong>${belt.label}</strong><small>Influence ${pct}% · Rival ${rival}% · Eff ${efficiency}% · Risk ${Math.round(belt.risk * 100)}%</small></div><button class="btn ghost">Secure (${formatNumber(actionCost)} cr)</button>`;
     row.querySelector("button").onclick = () => runAction(() => {
       if (state.credits < actionCost) return;
       state.credits -= actionCost;
@@ -458,11 +565,12 @@ function render() {
     const row = document.createElement("div");
     row.className = "row";
     const owned = state.inventory[contract.resource];
-    row.innerHTML = `<div><strong>${resources.find((r) => r.key === contract.resource).label} Contract</strong><small>Deliver ${contract.amount} · Reward ${formatNumber(contract.payout)} cr + ${contract.rep} rep</small></div><button class="btn ghost">${owned >= contract.amount ? "Complete" : `Need ${Math.ceil(contract.amount - owned)}`}</button>`;
+    row.innerHTML = `<div><strong>${resources.find((r) => r.key === contract.resource).label} Contract</strong><small>Deliver ${contract.amount} · Reward ${formatNumber(contract.payout)} cr + ${contract.rep} rep · Expires ${contract.expiresIn} ticks${contract.contestedBy && contract.contestedBy !== "player" ? ` · Rival bid: ${contract.contestedBy}` : ""}</small></div><button class="btn ghost">${owned >= contract.amount ? "Complete" : `Need ${Math.ceil(contract.amount - owned)}`}</button>`;
     const button = row.querySelector("button");
     button.disabled = owned < contract.amount;
     button.onclick = () => runAction(() => {
       if (owned < contract.amount) return;
+      contract.contestedBy = "player";
       state.inventory[contract.resource] -= contract.amount;
       state.credits += contract.payout;
       state.reputation += contract.rep;
@@ -483,6 +591,18 @@ function render() {
     row.innerHTML = `<div><strong>#${idx + 1} ${entry.name}</strong><small>Rep ${entry.rep.toFixed(1)}</small></div><strong>${formatNumber(entry.credits)} cr</strong>`;
     el.leaderboard.appendChild(row);
   });
+
+  el.rivalIntel.innerHTML = "";
+  if (!state.rivalIntents.length) {
+    el.rivalIntel.innerHTML = `<div class="row"><small>No active rival intents detected.</small></div>`;
+  } else {
+    state.rivalIntents.slice(0, 5).forEach((intent) => {
+      const row = document.createElement("div");
+      row.className = "row intel-row";
+      row.innerHTML = `<div><strong>${intent.rival}</strong><small>${intent.label}</small></div>`;
+      el.rivalIntel.appendChild(row);
+    });
+  }
 
   el.eventLog.innerHTML = state.log.map((item) => `<p>${item}</p>`).join("");
 }
@@ -546,6 +666,35 @@ el.extractSectorBtn.onclick = () => runAction(() => {
   });
   state.campaign.threat = Math.min(100, state.campaign.threat + 5);
   logEvent(`Extraction surge executed at ${belt.label}. Output spiked but threat increased.`);
+});
+
+el.sabotageIntelBtn.onclick = () => runAction(() => {
+  const cost = 280;
+  if (state.credits < cost) return;
+  state.credits -= cost;
+  state.rivalIntents = state.rivalIntents.slice(2);
+  Object.keys(state.rivalInfluence).forEach((key) => {
+    state.rivalInfluence[key] = Math.max(0, state.rivalInfluence[key] - (3 + Math.random() * 2));
+  });
+  logEvent("Counter-intel strike disrupted rival targeting data.");
+});
+
+el.diplomaticPactBtn.onclick = () => runAction(() => {
+  const cost = 340;
+  if (state.credits < cost) return;
+  state.credits -= cost;
+  state.diplomacyPactTicks = 8;
+  state.reputation += 0.6;
+  logEvent("Temporary diplomatic pact signed. Rival aggression reduced for 8 ticks.");
+});
+
+el.defensiveInvestmentBtn.onclick = () => runAction(() => {
+  const cost = 360;
+  if (state.credits < cost) return;
+  state.credits -= cost;
+  state.defensiveInvestmentTicks = 8;
+  state.campaign.threat = Math.max(0, state.campaign.threat - 4);
+  logEvent("Defensive investment approved. Raid impacts reduced for 8 ticks.");
 });
 
 Object.entries(el.mapNodes).forEach(([key, node]) => {
