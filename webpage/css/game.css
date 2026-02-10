@@ -196,3 +196,6 @@ select,input {
 .delta.negative { color: #ff6f7a; }
 .delta.neutral { color: #97a6bf; }
 .price { color: var(--accent); }
+
+.policy-row.selected { border-color: var(--accent-2); background: rgba(148,255,202,.08); }
+.policy-row button:disabled { border-color: var(--muted); color: var(--muted); }

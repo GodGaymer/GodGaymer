@@ -1,4 +1,4 @@
-const STORAGE_KEY = "orbital-syndicate-save-v4";
+const STORAGE_KEY = "orbital-syndicate-save-v5";
 const TICK_MS = 3000;
 const GRID_SIZE = 8;
 
@@ -32,12 +32,60 @@ const upgrades = [
   { key: "security", label: "Fleet Security", baseCost: 520, effect: 0.08 }
 ];
 
+const policyBranches = [
+  {
+    key: "mining",
+    label: "Mining Conglomerate",
+    summary: "+35% extraction output · +30% upkeep · +18% threat pressure",
+    extractionMult: 1.35,
+    upkeepMult: 1.3,
+    threatPressureMult: 1.18,
+    marketSellMult: 1,
+    marketBuyMult: 1
+  },
+  {
+    key: "trade",
+    label: "Trade Syndicate",
+    summary: "+20% trade revenue · +15% market volatility · +8% import cost",
+    extractionMult: 1,
+    upkeepMult: 1,
+    threatPressureMult: 1,
+    marketSellMult: 1.2,
+    marketBuyMult: 1.08,
+    marketVolatilityMult: 1.15
+  },
+  {
+    key: "security",
+    label: "Security Bloc",
+    summary: "-35% threat pressure · -10% extraction output · +18% patrol upkeep",
+    extractionMult: 0.9,
+    upkeepMult: 1.18,
+    threatPressureMult: 0.65,
+    marketSellMult: 1,
+    marketBuyMult: 1
+  }
+];
+
+const scenarioMutators = [
+  { key: "scarce-ice", label: "Scarce Ice", summary: "Cryo Ice veins are sparse but command a higher baseline price." },
+  { key: "volatile-markets", label: "Volatile Markets", summary: "Commodity prices swing harder every tick." },
+  { key: "high-threat", label: "High-Threat Galaxy", summary: "Coalition aggression rises faster and events are harsher." }
+];
+
 const createGrid = () => Array.from({ length: GRID_SIZE * GRID_SIZE }, (_, i) => ({ type: i < 4 ? "habitat" : "empty", boost: 1 + Math.random() * 0.5 }));
+
+function rollScenarioMutators() {
+  const shuffled = [...scenarioMutators].sort(() => Math.random() - 0.5);
+  return shuffled.slice(0, 2).map((mutator) => mutator.key);
+}
 
 const newObjectives = () => ([
   { id: "bankroll", label: "Reach 12,000 credits", type: "credits", target: 12000 },
   { id: "control", label: "Reach 60% average influence", type: "influence", target: 60 },
-  { id: "contracts", label: "Complete 5 contracts", type: "contracts", target: 5 }
+  { id: "contracts", label: "Complete 5 contracts", type: "contracts", target: 5 },
+  { id: "profit-kpi", label: "Sustain profit / tick above 420", type: "profitPerTick", target: 420 },
+  { id: "waste-kpi", label: "Keep waste below 1,400", type: "waste", target: 1400, comparator: "max" },
+  { id: "sla-kpi", label: "Maintain contract SLA at 75%", type: "sla", target: 75 }
 ]);
 
 function createInitialState() {
@@ -58,6 +106,17 @@ function createInitialState() {
     territories: Object.fromEntries(belts.map((b) => [b.key, 25])),
     upgrades: Object.fromEntries(upgrades.map((u) => [u.key, 0])),
     contracts: [],
+    policyBranch: null,
+    scenarioMutators: rollScenarioMutators(),
+    ledger: {
+      mined: Object.fromEntries(resources.map((r) => [r.key, 0])),
+      sold: Object.fromEntries(resources.map((r) => [r.key, 0])),
+      waste: 0,
+      revenue: 0,
+      operatingCost: 0,
+      contractTotal: 0,
+      contractOnTime: 0
+    },
     campaign: {
       chapter: 1,
       threat: 14,
@@ -97,6 +156,10 @@ const el = {
   buyBtn: document.getElementById("buyBtn"),
   resetBtn: document.getElementById("resetBtn"),
   tickBoostBtn: document.getElementById("tickBoostBtn"),
+  policyPanel: document.getElementById("policyPanel"),
+  mutatorPanel: document.getElementById("mutatorPanel"),
+  rerollMutatorsBtn: document.getElementById("rerollMutatorsBtn"),
+  scorecardPanel: document.getElementById("scorecardPanel"),
   mapLabels: Object.fromEntries(belts.map((belt) => [belt.key, document.getElementById(`map-label-${belt.key}`)])),
   mapNodes: Object.fromEntries(belts.map((belt) => [belt.key, document.getElementById(`node-${belt.key}`)])),
   mapRoutes: Object.fromEntries(belts.map((belt) => [belt.key, document.getElementById(`route-${belt.key}`)]))
@@ -118,7 +181,15 @@ function loadState() {
         ...(parsed.campaign || {})
       },
       selectedSector: parsed.selectedSector || "ceres",
-      completedContracts: parsed.completedContracts || 0
+      completedContracts: parsed.completedContracts || 0,
+      scenarioMutators: parsed.scenarioMutators?.length ? parsed.scenarioMutators : rollScenarioMutators()
+    };
+
+    merged.ledger = {
+      ...initial.ledger,
+      ...(parsed.ledger || {}),
+      mined: { ...initial.ledger.mined, ...(parsed.ledger?.mined || {}) },
+      sold: { ...initial.ledger.sold, ...(parsed.ledger?.sold || {}) }
     };
 
     const fallbackSnapshot = Object.fromEntries(resources.map((r) => [r.key, merged.inventory[r.key] ?? 0]));
@@ -143,6 +214,24 @@ const formatNumber = (num) => Intl.NumberFormat().format(Math.round(num));
 const priceFor = (key) => state.markets[key] || 0;
 const avgInfluence = () => belts.reduce((sum, b) => sum + state.territories[b.key], 0) / belts.length;
 
+const getPolicy = () => policyBranches.find((policy) => policy.key === state.policyBranch);
+const hasMutator = (mutatorKey) => state.scenarioMutators?.includes(mutatorKey);
+
+function currentProfitPerTick() {
+  if (!state.ticks) return 0;
+  return (state.ledger.revenue - state.ledger.operatingCost) / state.ticks;
+}
+
+function currentContractSla() {
+  if (!state.ledger.contractTotal) return 100;
+  return (state.ledger.contractOnTime / state.ledger.contractTotal) * 100;
+}
+
+function recordOperatingCost(amount) {
+  state.ledger.operatingCost += amount;
+  state.credits -= amount;
+}
+
 function updateResourceDeltas(previousSnapshot = state.previousInventorySnapshot || {}) {
   const snapshot = {};
   state.resourceDeltas = Object.fromEntries(resources.map((resource) => {
@@ -163,7 +252,7 @@ function spawnContracts() {
   state.contracts = Array.from({ length: 3 }, (_, i) => {
     const ore = resources[Math.floor(Math.random() * 4)];
     const amount = 40 + i * 28 + Math.floor(Math.random() * 20);
-    return { id: `${Date.now()}-${i}`, resource: ore.key, amount, payout: amount * (priceFor(ore.key) + 3), rep: 2 + i };
+    return { id: `${Date.now()}-${i}`, resource: ore.key, amount, payout: amount * (priceFor(ore.key) + 3), rep: 2 + i, expiresAt: state.ticks + 16 + i * 4 };
   });
 }
 
@@ -172,15 +261,24 @@ const countBuildings = (type) => state.grid.filter((tile) => tile.type === type)
 function objectiveProgress(objective) {
   if (objective.type === "credits") return state.credits;
   if (objective.type === "influence") return avgInfluence();
-  return state.completedContracts;
+  if (objective.type === "contracts") return state.completedContracts;
+  if (objective.type === "profitPerTick") return currentProfitPerTick();
+  if (objective.type === "waste") return state.ledger.waste;
+  if (objective.type === "sla") return currentContractSla();
+  return 0;
 }
 
 function updateCampaign() {
   const defenseCount = countBuildings("defense");
-  const pressure = Math.max(0, 1.6 - defenseCount * 0.12 - state.upgrades.security * 0.18);
+  const policy = getPolicy();
+  const mutatorThreat = hasMutator("high-threat") ? 1.35 : 1;
+  const pressure = Math.max(0, 1.6 - defenseCount * 0.12 - state.upgrades.security * 0.18) * (policy?.threatPressureMult || 1) * mutatorThreat;
   state.campaign.threat = Math.max(0, Math.min(100, state.campaign.threat + pressure));
 
-  const finished = state.campaign.objectives.every((objective) => objectiveProgress(objective) >= objective.target);
+  const finished = state.campaign.objectives.every((objective) => {
+    const value = objectiveProgress(objective);
+    return objective.comparator === "max" ? value <= objective.target : value >= objective.target;
+  });
 
   if (finished && state.campaign.status === "active") {
     state.campaign.status = "victory";
@@ -207,9 +305,12 @@ function simulateTick() {
   const defenseCount = countBuildings("defense");
   const habitatCount = countBuildings("habitat");
 
-  const drillBoost = 1 + state.upgrades.drills * upgrades[0].effect + mineCount * 0.015;
+  const policy = getPolicy();
+  const drillBoost = (1 + state.upgrades.drills * upgrades[0].effect + mineCount * 0.015) * (policy?.extractionMult || 1);
   const logisticsBoost = 1 + state.upgrades.logistics * upgrades[1].effect + logisticsCount * 0.012;
   const securityBoost = 1 + state.upgrades.security * upgrades[2].effect + defenseCount * 0.01;
+  const iceYieldMult = hasMutator("scarce-ice") ? 0.52 : 1;
+  const volatilityMult = (policy?.marketVolatilityMult || 1) * (hasMutator("volatile-markets") ? 1.55 : 1);
 
   belts.forEach((belt) => {
     const fleetsHere = Math.max(1, Math.floor((state.fleetSize + habitatCount * 0.2) / belts.length) + 1);
@@ -217,7 +318,11 @@ function simulateTick() {
     const base = state.extractionRate * fleetsHere * drillBoost * (0.6 + state.territories[belt.key] / 100) * riskPenalty;
 
     Object.entries(belt.richness).forEach(([res, richness]) => {
-      state.inventory[res] += base * richness;
+      const mined = base * richness * (res === "ice" ? iceYieldMult : 1);
+      state.inventory[res] += mined;
+      state.ledger.mined[res] += mined;
+      state.ledger.waste += mined * 0.018;
+
     });
 
     state.territories[belt.key] = Math.max(8, Math.min(95, state.territories[belt.key] + (Math.random() * 3 - 1.5) + defenseCount * 0.05));
@@ -228,16 +333,23 @@ function simulateTick() {
     state.inventory.iron -= refined;
     state.inventory.cobalt -= refined;
     state.inventory.alloy += refined * 1.2;
+    state.ledger.waste += refined * 0.08;
   }
 
   resources.forEach((res) => {
     const rivalPressure = state.rivals.reduce((sum, r) => sum + r.strength, 0) / state.rivals.length;
     const ownStock = state.inventory[res.key] / 600;
-    const delta = 1 + (Math.random() - 0.5) * res.volatility - ownStock * 0.01 + rivalPressure * 0.005;
-    state.markets[res.key] = Math.max(3, state.markets[res.key] * delta);
+    const baseShift = (Math.random() - 0.5) * res.volatility * volatilityMult;
+    const delta = 1 + baseShift - ownStock * 0.01 + rivalPressure * 0.005;
+    const scarceIcePremium = hasMutator("scarce-ice") && res.key === "ice" ? 1.04 : 1;
+    state.markets[res.key] = Math.max(3, state.markets[res.key] * delta * scarceIcePremium);
   });
 
-  state.credits += 30 * logisticsBoost + habitatCount * 3 + state.reputation;
+  const passiveIncome = 30 * logisticsBoost + habitatCount * 3 + state.reputation;
+  state.credits += passiveIncome;
+  state.ledger.revenue += passiveIncome;
+  const upkeep = (mineCount * 14 + refineryCount * 16 + logisticsCount * 12 + defenseCount * 10 + state.fleetSize * 9) * (policy?.upkeepMult || 1) * (hasMutator("high-threat") ? 1.15 : 1);
+  recordOperatingCost(upkeep);
   state.reputation += 0.08 + habitatCount * 0.005;
 
   state.rivals.forEach((rival) => {
@@ -246,6 +358,21 @@ function simulateTick() {
   });
 
   if (state.ticks % 8 === 0) maybeTriggerSectorEvent();
+  state.contracts = state.contracts.filter((contract) => {
+    if (state.ticks <= contract.expiresAt) return true;
+    state.ledger.contractTotal += 1;
+    state.reputation = Math.max(0, state.reputation - 1.5);
+    state.ledger.waste += 6;
+    logEvent(`Contract for ${contract.resource.toUpperCase()} expired and harmed SLA ratings.`);
+    return false;
+  });
+  if (!state.contracts.length) spawnContracts();
+
+  if (state.credits < -2500 && state.campaign.status === "active") {
+    state.campaign.status = "defeat";
+    state.gameOver = true;
+    logEvent("Bankruptcy declared after sustaining severe upkeep losses.");
+  }
   if (state.ticks % 10 === 0 && Math.random() > 0.5) {
     spawnContracts();
     logEvent("New federation contracts have been posted.");
@@ -258,20 +385,22 @@ function simulateTick() {
 }
 
 function maybeTriggerSectorEvent() {
+  const hazardScale = hasMutator("high-threat") ? 1.5 : 1;
   const events = [
     () => {
       const target = resources[Math.floor(Math.random() * 4)];
-      state.markets[target.key] *= 1.14;
+      state.markets[target.key] *= 1.14 + (hazardScale - 1) * 0.12;
       logEvent(`Solar storm disrupted ${target.label} routes. Prices surged.`);
     },
     () => {
       const key = belts[Math.floor(Math.random() * belts.length)].key;
       state.territories[key] += 8;
+      state.campaign.threat = Math.min(100, state.campaign.threat + 2 * (hazardScale - 1));
       state.reputation += 1;
       logEvent(`Security wing improved control in ${key.toUpperCase()}.`);
     },
     () => {
-      state.credits += 420;
+      state.credits += Math.round(420 / hazardScale);
       logEvent("A derelict convoy was salvaged. Emergency credits acquired.");
     }
   ];
@@ -346,11 +475,13 @@ function renderCampaign() {
   const threat = Math.round(state.campaign.threat);
   const objectivesMarkup = state.campaign.objectives.map((objective) => {
     const current = objectiveProgress(objective);
-    const pct = Math.min(100, (current / objective.target) * 100);
+    const pct = objective.comparator === "max"
+      ? Math.max(0, Math.min(100, ((objective.target - current) / objective.target) * 100))
+      : Math.min(100, (current / objective.target) * 100);
     return `
       <div class="objective">
         <strong>${objective.label}</strong>
-        <small>${formatNumber(current)} / ${formatNumber(objective.target)}</small>
+        <small>${objective.comparator === "max" ? `${formatNumber(current)} / max ${formatNumber(objective.target)}` : `${formatNumber(current)} / ${formatNumber(objective.target)}`}</small>
         <div class="progress"><span style="width:${pct}%"></span></div>
       </div>
     `;
@@ -412,6 +543,39 @@ function render() {
 
   renderCampaign();
   renderResourcePanel();
+
+  el.policyPanel.innerHTML = policyBranches.map((branch) => {
+    const selected = branch.key === state.policyBranch;
+    const disabled = Boolean(state.policyBranch) && !selected;
+    return `<div class="row policy-row${selected ? " selected" : ""}"><div><strong>${branch.label}</strong><small>${branch.summary}</small></div><button class="btn ghost" data-policy="${branch.key}" ${disabled ? "disabled" : ""}>${selected ? "Locked" : "Adopt"}</button></div>`;
+  }).join("");
+  el.policyPanel.querySelectorAll("button[data-policy]").forEach((button) => {
+    button.onclick = () => runAction(() => {
+      if (state.policyBranch) return;
+      state.policyBranch = button.dataset.policy;
+      logEvent(`${policyBranches.find((p) => p.key === state.policyBranch).label} doctrine adopted. Rival branches are now locked.`);
+    });
+  });
+
+  el.mutatorPanel.innerHTML = state.scenarioMutators.map((key) => {
+    const mutator = scenarioMutators.find((entry) => entry.key === key);
+    return `<div class="objective"><strong>${mutator.label}</strong><small>${mutator.summary}</small></div>`;
+  }).join("");
+
+  const netProfit = state.ledger.revenue - state.ledger.operatingCost;
+  const totalMined = resources.reduce((sum, resource) => sum + state.ledger.mined[resource.key], 0);
+  const totalSold = resources.reduce((sum, resource) => sum + state.ledger.sold[resource.key], 0);
+  const margin = state.ledger.revenue > 0 ? (netProfit / state.ledger.revenue) * 100 : 0;
+  el.scorecardPanel.innerHTML = `
+    <div class="objective"><strong>Total mined</strong><small>${formatNumber(totalMined)}</small></div>
+    <div class="objective"><strong>Total sold</strong><small>${formatNumber(totalSold)}</small></div>
+    <div class="objective"><strong>Waste generated</strong><small>${formatNumber(state.ledger.waste)}</small></div>
+    <div class="objective"><strong>Profit / tick</strong><small>${formatNumber(currentProfitPerTick())} cr</small></div>
+    <div class="objective"><strong>Contract SLA</strong><small>${currentContractSla().toFixed(1)}%</small></div>
+    <div class="objective"><strong>Net margin</strong><small>${margin.toFixed(1)}%</small></div>
+  `;
+
+
   renderGrid();
   renderBuildActions();
   updateMapVisuals();
@@ -458,15 +622,19 @@ function render() {
     const row = document.createElement("div");
     row.className = "row";
     const owned = state.inventory[contract.resource];
-    row.innerHTML = `<div><strong>${resources.find((r) => r.key === contract.resource).label} Contract</strong><small>Deliver ${contract.amount} · Reward ${formatNumber(contract.payout)} cr + ${contract.rep} rep</small></div><button class="btn ghost">${owned >= contract.amount ? "Complete" : `Need ${Math.ceil(contract.amount - owned)}`}</button>`;
+    row.innerHTML = `<div><strong>${resources.find((r) => r.key === contract.resource).label} Contract</strong><small>Deliver ${contract.amount} · Reward ${formatNumber(contract.payout)} cr + ${contract.rep} rep · Due T+${contract.expiresAt}</small></div><button class="btn ghost">${owned >= contract.amount ? "Complete" : `Need ${Math.ceil(contract.amount - owned)}`}</button>`;
     const button = row.querySelector("button");
     button.disabled = owned < contract.amount;
     button.onclick = () => runAction(() => {
       if (owned < contract.amount) return;
       state.inventory[contract.resource] -= contract.amount;
       state.credits += contract.payout;
+      state.ledger.revenue += contract.payout;
+      state.ledger.sold[contract.resource] += contract.amount;
       state.reputation += contract.rep;
       state.completedContracts += 1;
+      state.ledger.contractTotal += 1;
+      if (state.ticks <= contract.expiresAt) state.ledger.contractOnTime += 1;
       state.contracts = state.contracts.filter((c) => c.id !== contract.id);
       if (!state.contracts.length) spawnContracts();
       logEvent("Contract completed successfully.");
@@ -500,19 +668,22 @@ el.sellBtn.onclick = () => runAction(() => {
   const key = el.marketSelect.value;
   const amount = Math.max(1, Math.floor(Number(el.tradeAmount.value) || 1));
   if (state.inventory[key] < amount) return;
-  const payout = amount * priceFor(key);
+  const payout = amount * priceFor(key) * ((getPolicy()?.marketSellMult) || 1);
   state.inventory[key] -= amount;
   state.credits += payout;
   state.reputation += 0.08;
+  state.ledger.revenue += payout;
+  state.ledger.sold[key] += amount;
   logEvent(`Sold ${amount} ${key} for ${formatNumber(payout)} credits.`);
 });
 
 el.buyBtn.onclick = () => runAction(() => {
   const key = el.marketSelect.value;
   const amount = Math.max(1, Math.floor(Number(el.tradeAmount.value) || 1));
-  const cost = amount * priceFor(key);
+  const cost = amount * priceFor(key) * ((getPolicy()?.marketBuyMult) || 1);
   if (state.credits < cost) return;
   state.credits -= cost;
+  state.ledger.operatingCost += cost;
   state.inventory[key] += amount;
   logEvent(`Purchased ${amount} ${key} for ${formatNumber(cost)} credits.`);
 });
@@ -542,8 +713,12 @@ el.extractSectorBtn.onclick = () => runAction(() => {
   state.credits -= cost;
   const belt = belts.find((b) => b.key === state.selectedSector);
   Object.entries(belt.richness).forEach(([res, richness]) => {
-    state.inventory[res] += 14 * richness;
+    const surgeYield = 14 * richness;
+    state.inventory[res] += surgeYield;
+    state.ledger.mined[res] += surgeYield;
+    state.ledger.waste += surgeYield * 0.05;
   });
+  state.ledger.operatingCost += cost;
   state.campaign.threat = Math.min(100, state.campaign.threat + 5);
   logEvent(`Extraction surge executed at ${belt.label}. Output spiked but threat increased.`);
 });
@@ -552,6 +727,12 @@ Object.entries(el.mapNodes).forEach(([key, node]) => {
   node.onclick = () => runAction(() => {
     state.selectedSector = key;
   });
+});
+
+el.rerollMutatorsBtn.onclick = () => runAction(() => {
+  if (state.ticks > 0) return;
+  state.scenarioMutators = rollScenarioMutators();
+  logEvent("Scenario mutators rerolled before launch.");
 });
 
 el.tickBoostBtn.onclick = () => simulateTick();
