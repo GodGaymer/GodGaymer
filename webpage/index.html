@@ -17,6 +17,7 @@
       </div>
       <div class="topbar-actions">
         <button id="tickBoostBtn" class="btn ghost">+1 Tick</button>
+        <button id="emergencyLoanBtn" class="btn ghost">Emergency Loan</button>
         <button id="resetBtn" class="btn danger">Reset Run</button>
       </div>
     </header>
@@ -136,8 +137,9 @@
         <h2>Factory & Trade</h2>
         <div class="inline wrap">
           <select id="refineSelect"></select>
-          <button id="refineBtn" class="btn">Refine → Alloy</button>
+          <button id="refineBtn" class="btn">Queue Recipe</button>
         </div>
+        <p id="refineryQueueInfo" class="subtle"></p>
         <hr />
         <div class="inline wrap">
           <select id="marketSelect"></select>
